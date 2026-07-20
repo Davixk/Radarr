@@ -18,7 +18,7 @@ RUN dotnet build src/Radarr.Api.V3/Radarr.Api.V3.csproj \
   && echo "=== located Core/Api.V3 assemblies ===" \
   && find /src -name 'Radarr.Core.dll' -o -name 'Radarr.Api.V3.dll' \
   && mkdir -p /overlay \
-  && cp /src/_output/Radarr.Core.dll /src/_output/Radarr.Api.V3.dll /overlay/ \
+  && cp /src/_output/net8.0/Radarr.Core.dll /src/_output/net8.0/Radarr.Api.V3.dll /overlay/ \
   && ls -la /overlay
 
 FROM ghcr.io/home-operations/radarr@sha256:0756fffa75b30219e3dbac8d027a5389f53cbb34ae83fa4b0976c1b0524c8eb1
