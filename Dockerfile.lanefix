@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Overlay image for the command-queue-lane fix.
+# Builds Radarr.Core.dll + Radarr.Api.V3.dll from source with the base image's
+# AssemblyVersion so they bind against the untouched sibling assemblies, then
+# drops just those two DLLs onto the pinned home-operations base image.
+
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+# Must match the base image's app version so the rebuilt assemblies bind against
+# the base's untouched *.Common (a default 10.0.0.* stamp crash-loops on startup).
+ARG ASSEMBLY_VERSION=6.2.1.10461
+WORKDIR /src
+COPY . .
+RUN dotnet build src/Radarr.Api.V3/Radarr.Api.V3.csproj \
+      -c Release \
+      -p:SolutionDir=/src/src/ \
+      -p:AssemblyVersion=${ASSEMBLY_VERSION} \
+      -p:TreatWarningsAsErrors=false \
+  && echo "=== located Core/Api.V3 assemblies ===" \
+  && find /src -name 'Radarr.Core.dll' -o -name 'Radarr.Api.V3.dll' \
+  && mkdir -p /overlay \
+  && cp /src/_output/Radarr.Core.dll /src/_output/Radarr.Api.V3.dll /overlay/ \
+  && ls -la /overlay
+
+FROM ghcr.io/home-operations/radarr@sha256:0756fffa75b30219e3dbac8d027a5389f53cbb34ae83fa4b0976c1b0524c8eb1
+LABEL org.opencontainers.image.source="https://github.com/Davixk/Radarr"
+COPY --from=build /overlay/Radarr.Core.dll /overlay/Radarr.Api.V3.dll /app/bin/
