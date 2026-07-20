@@ -32,7 +32,9 @@ namespace NzbDrone.Core.Messaging.Commands
         void Fail(CommandModel command, string message, Exception e);
         void Requeue();
         void Cancel(int id);
+        List<int> CancelMany(string name = null);
         void CleanCommands();
+        void SetMaxConcurrentSearch(int max);
     }
 
     public class CommandQueueManager : IManageCommandQueue, IHandle<ApplicationStartedEvent>
@@ -230,6 +232,30 @@ namespace NzbDrone.Core.Messaging.Commands
             {
                 throw new NzbDroneClientException(HttpStatusCode.Conflict, "Unable to cancel task");
             }
+
+            // Persist the cancellation so the command can't be resurrected from the DB on restart.
+            _repo.Cancel(id);
+        }
+
+        public List<int> CancelMany(string name = null)
+        {
+            lock (_commandQueue)
+            {
+                var queued = _commandQueue.QueuedOrStarted()
+                                          .Where(c => c.Status == CommandStatus.Queued)
+                                          .Where(c => name == null || c.Name == name)
+                                          .ToList();
+
+                _commandQueue.RemoveMany(queued);
+                _repo.CancelQueued(name);
+
+                return queued.Select(c => c.Id).ToList();
+            }
+        }
+
+        public void SetMaxConcurrentSearch(int max)
+        {
+            _commandQueue.SetMaxConcurrentSearch(max);
         }
 
         public void CleanCommands()

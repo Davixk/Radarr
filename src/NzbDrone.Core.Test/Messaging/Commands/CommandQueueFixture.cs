@@ -1,8 +1,10 @@
+using System.Collections.Generic;
 using FizzWare.NBuilder;
 using FluentAssertions;
 using NUnit.Framework;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.ImportLists;
+using NzbDrone.Core.IndexerSearch;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Movies.Commands;
 using NzbDrone.Core.Test.Framework;
@@ -186,6 +188,63 @@ namespace NzbDrone.Core.Test.Messaging.Commands
             Subject.TryGet(out var command);
 
             command.Should().BeNull();
+        }
+
+        private void GivenQueuedSearchCommand(int movieId)
+        {
+            var commandModel = Builder<CommandModel>
+                .CreateNew()
+                .With(c => c.Name = "MoviesSearch")
+                .With(c => c.Body = new MoviesSearchCommand { MovieIds = new List<int> { movieId } })
+                .With(c => c.Status = CommandStatus.Queued)
+                .Build();
+
+            Subject.Add(commandModel);
+        }
+
+        [Test]
+        public void should_not_hand_out_search_command_once_concurrent_search_cap_is_reached()
+        {
+            Subject.SetMaxConcurrentSearch(2);
+
+            GivenQueuedSearchCommand(1);
+            GivenQueuedSearchCommand(2);
+            GivenQueuedSearchCommand(3);
+
+            Subject.TryGet(out var first).Should().BeTrue();
+            first.Body.Should().BeOfType<MoviesSearchCommand>();
+
+            Subject.TryGet(out var second).Should().BeTrue();
+            second.Body.Should().BeOfType<MoviesSearchCommand>();
+
+            // The cap is reached; the reserved lane idles rather than starting a third search.
+            Subject.TryGet(out var third).Should().BeFalse();
+            third.Should().BeNull();
+        }
+
+        [Test]
+        public void should_hand_out_non_search_command_while_search_cap_is_reached()
+        {
+            Subject.SetMaxConcurrentSearch(2);
+
+            GivenQueuedSearchCommand(1);
+            GivenQueuedSearchCommand(2);
+
+            Subject.TryGet(out _);
+            Subject.TryGet(out _);
+
+            var nonSearchCommand = Builder<CommandModel>
+                .CreateNew()
+                .With(c => c.Name = "RefreshMovie")
+                .With(c => c.Body = new RefreshMovieCommand())
+                .With(c => c.Status = CommandStatus.Queued)
+                .Build();
+
+            Subject.Add(nonSearchCommand);
+
+            Subject.TryGet(out var command).Should().BeTrue();
+            command.Should().NotBeNull();
+            command.Body.Should().BeOfType<RefreshMovieCommand>();
         }
     }
 }

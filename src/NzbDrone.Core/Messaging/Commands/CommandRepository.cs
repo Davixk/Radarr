@@ -13,6 +13,8 @@ namespace NzbDrone.Core.Messaging.Commands
         List<CommandModel> Queued();
         void Start(CommandModel command);
         void End(CommandModel command);
+        void Cancel(int id);
+        void CancelQueued(string name = null);
     }
 
     public class CommandRepository : BasicRepository<CommandModel>, ICommandRepository
@@ -58,6 +60,46 @@ namespace NzbDrone.Core.Messaging.Commands
         public void End(CommandModel command)
         {
             SetFields(command, c => c.EndedAt, c => c.Status, c => c.Duration, c => c.Exception);
+        }
+
+        public void Cancel(int id)
+        {
+            var sql = @"UPDATE ""Commands"" SET ""Status"" = @Cancelled, ""EndedAt"" = @Ended WHERE ""Id"" = @Id AND ""Status"" = @Queued";
+            var args = new
+                {
+                    Cancelled = (int)CommandStatus.Cancelled,
+                    Queued = (int)CommandStatus.Queued,
+                    Ended = DateTime.UtcNow,
+                    Id = id
+                };
+
+            using (var conn = _database.OpenConnection())
+            {
+                conn.Execute(sql, args);
+            }
+        }
+
+        public void CancelQueued(string name = null)
+        {
+            var sql = @"UPDATE ""Commands"" SET ""Status"" = @Cancelled, ""EndedAt"" = @Ended WHERE ""Status"" = @Queued";
+
+            if (name != null)
+            {
+                sql += @" AND ""Name"" = @Name";
+            }
+
+            var args = new
+                {
+                    Cancelled = (int)CommandStatus.Cancelled,
+                    Queued = (int)CommandStatus.Queued,
+                    Ended = DateTime.UtcNow,
+                    Name = name
+                };
+
+            using (var conn = _database.OpenConnection())
+            {
+                conn.Execute(sql, args);
+            }
         }
     }
 }

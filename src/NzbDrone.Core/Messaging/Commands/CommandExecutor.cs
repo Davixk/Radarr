@@ -14,6 +14,7 @@ namespace NzbDrone.Core.Messaging.Commands
         private const int THREAD_UPPER_BOUND = 10;
         private const int THREAD_LOWER_BOUND = 2;
         private const int THREAD_LIMIT = 2;
+        private const int DEFAULT_SEARCH_RESERVE = 1;
 
         private readonly Logger _logger;
         private readonly IServiceFactory _serviceFactory;
@@ -134,9 +135,24 @@ namespace NzbDrone.Core.Messaging.Commands
             threadLimit = Math.Max(THREAD_LOWER_BOUND, threadLimit);
             threadLimit = Math.Min(THREAD_UPPER_BOUND, threadLimit);
 
-            _logger.Info("Starting {} threads for tasks.", threadLimit);
+            var workerCount = threadLimit + 1;
 
-            for (var i = 0; i < threadLimit + 1; i++)
+            var envReserve = Environment.GetEnvironmentVariable("COMMAND_SEARCH_RESERVE") ?? $"{DEFAULT_SEARCH_RESERVE}";
+            var reserve = DEFAULT_SEARCH_RESERVE;
+            if (int.TryParse(envReserve, out var parsedReserve))
+            {
+                reserve = parsedReserve;
+            }
+
+            reserve = Math.Max(0, Math.Min(workerCount - 1, reserve));
+
+            var maxConcurrentSearch = Math.Max(1, workerCount - reserve);
+            _commandQueueManager.SetMaxConcurrentSearch(maxConcurrentSearch);
+
+            _logger.Info("Starting {} threads for tasks.", threadLimit);
+            _logger.Info("Reserving {0} worker(s) for non-search commands, max concurrent searches: {1}.", reserve, maxConcurrentSearch);
+
+            for (var i = 0; i < workerCount; i++)
             {
                 var thread = new Thread(ExecuteCommands);
                 thread.Start();

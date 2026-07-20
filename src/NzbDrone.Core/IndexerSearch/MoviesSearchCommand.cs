@@ -8,5 +8,6 @@ namespace NzbDrone.Core.IndexerSearch
         public List<int> MovieIds { get; set; }
 
         public override bool SendUpdatesToClient => true;
+        public override bool IsSearchCommand => true;
     }
 }
