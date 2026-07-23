@@ -24,7 +24,9 @@ namespace NzbDrone.Core.MediaFiles.MovieImport.Specifications
                 return ImportSpecDecision.Accept();
             }
 
-            var sample = _detectSample.IsSample(localMovie.Movie.MovieMetadata, localMovie.Path);
+            // Reuse the result computed during the parallel probe phase when available so the file is
+            // not probed for its runtime a second time; fall back to probing when it was not precomputed.
+            var sample = localMovie.SampleResult ?? _detectSample.IsSample(localMovie.Movie.MovieMetadata, localMovie.Path);
 
             if (sample == DetectSampleResult.Sample)
             {
