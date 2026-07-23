@@ -22,6 +22,17 @@ namespace NzbDrone.Core.Download
         void Check(TrackedDownload trackedDownload);
         void Import(TrackedDownload trackedDownload);
         bool VerifyImport(TrackedDownload trackedDownload, List<ImportResult> importResults);
+
+        // Cross-download concurrent import pipeline (coordinated by DownloadProcessingService):
+        //  - PrepareImport: cheap serial setup (resolve import item, validate path/movie). Kept serial
+        //    because it can call the download client, which is not guaranteed concurrency-safe.
+        //  - ProbeImport: expensive read-only decide (the ffprobe/media-info/decision work). Safe to run
+        //    concurrently across downloads.
+        //  - CompleteImport: mutating serial commit (re-validate against current DB, import, verify,
+        //    publish events). Must run serially and in the original download order.
+        PendingImport PrepareImport(TrackedDownload trackedDownload);
+        void ProbeImport(PendingImport pendingImport);
+        void CompleteImport(PendingImport pendingImport);
     }
 
     public class CompletedDownloadService : ICompletedDownloadService
@@ -30,6 +41,7 @@ namespace NzbDrone.Core.Download
         private readonly IHistoryService _historyService;
         private readonly IProvideImportItemService _provideImportItemService;
         private readonly IDownloadedMovieImportService _downloadedMovieImportService;
+        private readonly IMakeImportDecision _importDecisionMaker;
         private readonly IParsingService _parsingService;
         private readonly IMovieService _movieService;
         private readonly ITrackedDownloadAlreadyImported _trackedDownloadAlreadyImported;
@@ -40,6 +52,7 @@ namespace NzbDrone.Core.Download
                                         IHistoryService historyService,
                                         IProvideImportItemService provideImportItemService,
                                         IDownloadedMovieImportService downloadedMovieImportService,
+                                        IMakeImportDecision importDecisionMaker,
                                         IParsingService parsingService,
                                         IMovieService movieService,
                                         ITrackedDownloadAlreadyImported trackedDownloadAlreadyImported,
@@ -50,6 +63,7 @@ namespace NzbDrone.Core.Download
             _historyService = historyService;
             _provideImportItemService = provideImportItemService;
             _downloadedMovieImportService = downloadedMovieImportService;
+            _importDecisionMaker = importDecisionMaker;
             _parsingService = parsingService;
             _movieService = movieService;
             _trackedDownloadAlreadyImported = trackedDownloadAlreadyImported;
@@ -121,28 +135,80 @@ namespace NzbDrone.Core.Download
 
         public void Import(TrackedDownload trackedDownload)
         {
+            var pendingImport = PrepareImport(trackedDownload);
+            ProbeImport(pendingImport);
+            CompleteImport(pendingImport);
+        }
+
+        public PendingImport PrepareImport(TrackedDownload trackedDownload)
+        {
             SetImportItem(trackedDownload);
 
             if (!ValidatePath(trackedDownload))
             {
-                return;
+                return new PendingImport(trackedDownload, PendingImportStatus.InvalidPath);
             }
 
             if (trackedDownload.RemoteMovie?.Movie == null)
             {
-                trackedDownload.Warn("Unable to parse download, automatic import is not possible.");
-                SetStateToImportBlocked(trackedDownload);
+                return new PendingImport(trackedDownload, PendingImportStatus.RemoteMovieMissing);
+            }
 
+            return new PendingImport(trackedDownload, PendingImportStatus.ReadyToProbe, trackedDownload.ImportItem.OutputPath.FullPath);
+        }
+
+        public void ProbeImport(PendingImport pendingImport)
+        {
+            if (pendingImport == null || pendingImport.Status != PendingImportStatus.ReadyToProbe)
+            {
+                return;
+            }
+
+            var trackedDownload = pendingImport.TrackedDownload;
+
+            pendingImport.Batch = _downloadedMovieImportService.DecidePath(pendingImport.OutputPath,
+                ImportMode.Auto,
+                trackedDownload.RemoteMovie.Movie,
+                trackedDownload.ImportItem);
+        }
+
+        public void CompleteImport(PendingImport pendingImport)
+        {
+            if (pendingImport == null)
+            {
+                return;
+            }
+
+            var trackedDownload = pendingImport.TrackedDownload;
+
+            switch (pendingImport.Status)
+            {
+                case PendingImportStatus.InvalidPath:
+                    // ValidatePath already warned during preparation; nothing left to commit.
+                    return;
+                case PendingImportStatus.RemoteMovieMissing:
+                    trackedDownload.Warn("Unable to parse download, automatic import is not possible.");
+                    SetStateToImportBlocked(trackedDownload);
+                    return;
+            }
+
+            // ReadyToProbe but the probe was abandoned on timeout (or never ran): leave the download
+            // ImportPending for a future pass rather than importing an unprobed download.
+            if (pendingImport.Batch == null)
+            {
                 return;
             }
 
             trackedDownload.State = TrackedDownloadState.Importing;
 
-            var outputPath = trackedDownload.ImportItem.OutputPath.FullPath;
-            var importResults = _downloadedMovieImportService.ProcessPath(outputPath,
-                ImportMode.Auto,
-                trackedDownload.RemoteMovie.Movie,
-                trackedDownload.ImportItem);
+            // Re-validate the cheap DB-state specifications against the now-current database before
+            // committing. The probe/decide phase ran concurrently across downloads against a pre-commit
+            // snapshot, so a second download for a movie that an earlier commit in this same serial pass
+            // already imported is rejected here instead of being double-imported.
+            pendingImport.Batch.Decisions = _importDecisionMaker.RevalidateApprovedDecisions(pendingImport.Batch.Decisions, pendingImport.Batch.DownloadClientItem);
+
+            var outputPath = pendingImport.OutputPath;
+            var importResults = _downloadedMovieImportService.ImportDecidedBatch(pendingImport.Batch);
 
             if (VerifyImport(trackedDownload, importResults))
             {
