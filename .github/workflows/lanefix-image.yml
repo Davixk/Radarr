@@ -36,6 +36,6 @@ jobs:
           file: Dockerfile.lanefix
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/davixk/radarr:v6.2.1.10461-fork2
+          tags: ghcr.io/davixk/radarr:v6.2.1.10461-fork3
           cache-from: type=gha
           cache-to: type=gha,mode=max
