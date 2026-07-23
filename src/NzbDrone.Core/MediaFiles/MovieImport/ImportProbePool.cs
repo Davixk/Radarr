@@ -22,13 +22,28 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
         private const int PROBE_THREADS_UPPER_BOUND = 16;
         private const int DEFAULT_PROBE_TIMEOUT_SECONDS = 0;
 
+        // Set on a pool worker thread while it runs body(). Because the pool is now nested (a per-download
+        // fan-out inside DownloadProcessingService can itself fan-out across a download's files in
+        // ImportDecisionMaker), a nested Run reached from a worker thread would otherwise open its OWN
+        // degree budget, letting total concurrent probes reach degree*degree (e.g. 8*8=64) and
+        // over-subscribing a debrid/network mount. When this flag is set the nested Run collapses to
+        // degree 1 (serial within that download), so the OUTER pool is the only source of concurrency and
+        // total concurrent probes stays bounded by the outer degree. ThreadStatic because each worker is a
+        // dedicated thread; workers exit after body() so no reset is needed.
+        [ThreadStatic]
+        private static bool _insidePool;
+
         // Runs body(i) for each i in [0, count) with bounded logical concurrency of GetDegreeOfParallelism().
         // Returns a per-index flag array marking which items were ABANDONED because their probe exceeded
         // GetTimeout(); the array is all-false when no timeout is configured (probes are waited on
         // indefinitely, the current default). A degree of 1 or a single item runs inline (serial).
         public static bool[] Run(int count, Action<int> body)
         {
-            var degree = GetDegreeOfParallelism();
+            // A Run reached from within a pool worker thread (nested pool) collapses to degree 1 so it runs
+            // serially and the OUTER pool remains the only source of concurrency; this bounds total
+            // concurrent probes to the outer degree instead of degree*degree. A top-level Run uses the full
+            // configured degree.
+            var degree = _insidePool ? 1 : GetDegreeOfParallelism();
             var timeout = GetTimeout();
 
             if (timeout > TimeSpan.Zero)
@@ -109,6 +124,9 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
             {
                 var thread = new Thread(() =>
                 {
+                    // Mark this worker so any Run invoked from within body() (a nested pool) runs serially.
+                    _insidePool = true;
+
                     int index;
 
                     while ((index = Interlocked.Increment(ref nextIndex)) < count)
@@ -205,6 +223,9 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
 
                     var thread = new Thread(() =>
                     {
+                        // Mark this worker so any Run invoked from within body() (a nested pool) runs serially.
+                        _insidePool = true;
+
                         try
                         {
                             body(index);
