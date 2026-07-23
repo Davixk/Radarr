@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using FizzWare.NBuilder;
 using FluentAssertions;
 using Moq;
@@ -26,9 +27,16 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
         private Movie _movie;
         private Mock<IImportDecisionEngineSpecification> _pass;
 
+        // Released in TearDown so a probe that is deliberately blocked forever (representing an
+        // uninterruptible D-state ffprobe) is unblocked once the test finishes; the worker thread is a
+        // background thread so it never keeps the runner alive on its own.
+        private ManualResetEventSlim _wedgeLatch;
+
         [SetUp]
         public void Setup()
         {
+            _wedgeLatch = new ManualResetEventSlim(false);
+
             _pass = new Mock<IImportDecisionEngineSpecification>();
             _pass.Setup(c => c.IsSatisfiedBy(It.IsAny<LocalMovie>(), It.IsAny<DownloadClientItem>()))
                  .Returns(ImportSpecDecision.Accept());
@@ -49,6 +57,11 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
         public void TearDown()
         {
             Environment.SetEnvironmentVariable("IMPORT_PROBE_THREADS", null);
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_TIMEOUT", null);
+
+            // Release any probe blocked on the latch so its background worker can unwind and the process
+            // does not accumulate wedged threads across tests.
+            _wedgeLatch.Set();
         }
 
         private List<string> GivenVideoFiles(int count)
@@ -121,6 +134,51 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
             decisions.Should().HaveCount(3);
             decisions.Select(d => d.LocalMovie.Path).Should().Equal(files);
             reader.PeakConcurrency.Should().Be(1);
+        }
+
+        [Test]
+        public void should_abandon_wedged_probe_and_import_healthy_files_when_timeout_configured()
+        {
+            var files = GivenVideoFiles(3);
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_THREADS", "4");
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_TIMEOUT", "1");
+
+            // The middle file's probe never returns (an uninterruptible D-state ffprobe); the others are fast.
+            var reader = new WedgeOneReader(files[1], _wedgeLatch);
+            GivenAugmentBlocksOn(reader);
+
+            var task = Task.Run(() => Subject.GetImportDecisions(files, _movie, null, null, false, false));
+
+            // The fix: the batch must flow past the wedge rather than hang on it.
+            task.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue("the configured probe timeout must abandon the wedged probe and let the batch complete");
+
+            var decisions = task.Result;
+
+            decisions.Should().HaveCount(3);
+            decisions.Select(d => d.LocalMovie.Path).Should().Equal(files, "decisions stay in input order regardless of the abandoned probe");
+            decisions[0].Approved.Should().BeTrue();
+            decisions[2].Approved.Should().BeTrue();
+            decisions[1].Approved.Should().BeFalse("the wedged file is rejected this pass");
+            decisions[1].Rejections.Should().ContainSingle(r => r.Reason == ImportRejectionReason.Error && r.Message == "Probe timed out");
+        }
+
+        [Test]
+        public void should_hang_on_wedged_probe_when_timeout_disabled()
+        {
+            var files = GivenVideoFiles(3);
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_THREADS", "4");
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_TIMEOUT", "0");
+
+            var reader = new WedgeOneReader(files[1], _wedgeLatch);
+            GivenAugmentBlocksOn(reader);
+
+            var task = Task.Run(() => Subject.GetImportDecisions(files, _movie, null, null, false, false));
+
+            // Documents the default behaviour the timeout knob is off by default: with no probe timeout the
+            // never-returning probe joins forever, so the call does not complete within a bounded wait.
+            // The blocked worker is a background thread and the latch is released in TearDown, so the
+            // runner is not left hanging.
+            task.Wait(TimeSpan.FromSeconds(3)).Should().BeFalse("without a probe timeout the wedged probe hangs the whole batch");
         }
 
         // Releases callers only once expectedConcurrency of them are blocked at the same time,
@@ -236,6 +294,37 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
 
                     _completedCount++;
                     Monitor.PulseAll(_sync);
+                }
+
+                return new MediaInfoModel();
+            }
+
+            public TimeSpan? GetRunTime(string filename)
+            {
+                return TimeSpan.FromMinutes(120);
+            }
+        }
+
+        // Blocks one specific file's probe until the latch is released, representing an ffprobe stuck in
+        // uninterruptible D-state that never returns and cannot be killed. Every other file probes
+        // instantly. The latch is only released in TearDown, so within a test the wedged probe truly
+        // never completes.
+        private sealed class WedgeOneReader : IVideoFileInfoReader
+        {
+            private readonly string _wedgePath;
+            private readonly ManualResetEventSlim _latch;
+
+            public WedgeOneReader(string wedgePath, ManualResetEventSlim latch)
+            {
+                _wedgePath = wedgePath;
+                _latch = latch;
+            }
+
+            public MediaInfoModel GetMediaInfo(string filename)
+            {
+                if (string.Equals(filename, _wedgePath, StringComparison.Ordinal))
+                {
+                    _latch.Wait();
                 }
 
                 return new MediaInfoModel();
