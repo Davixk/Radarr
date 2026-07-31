@@ -38,6 +38,12 @@ namespace NzbDrone.Core.MediaFiles
             // fork4: if disk enumeration returned nothing while the DB still holds file records, a mount or
             // enumeration failure is far likelier than every file having genuinely vanished. Skip the
             // deletions this pass rather than mass-marking the whole library missing. On by default.
+            // fork5 coupling: this rail is ALSO the safety net for DiskScanService.Scan's folder-missing branch,
+            // which calls Clean with an empty list when the movie folder reads absent/unreachable. And it stays
+            // sound only because GetFiles uses Directory.EnumerateFiles(IgnoreInaccessible=true), which skips
+            // only access errors (EACCES) and lets transport errno (ENOTCONN/EIO/ESTALE) THROW rather than
+            // return empty; if that .NET semantic ever changes so a faulting dir yields a partial/empty list,
+            // arm CLEANUP_MAX_DELETE_FRACTION below to bound the blast radius.
             if (filesOnDiskKeys.Count == 0 && movieFiles.Count > 0)
             {
                 _logger.Warn("Disk enumeration returned no files for {0} while {1} record(s) exist; skipping cleanup deletions to avoid data loss on a possible mount failure.", movie, movieFiles.Count);

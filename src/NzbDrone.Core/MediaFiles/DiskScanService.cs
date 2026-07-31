@@ -123,6 +123,10 @@ namespace NzbDrone.Core.MediaFiles
                     _logger.Debug("Movie's folder doesn't exist: {0}", movie.Path);
                 }
 
+                // fork5 coupling: passing an empty list here (movie folder absent/unreachable) is safe ONLY
+                // because MediaFileTableCleanupService.Clean bails on empty-list-while-records-exist. If the
+                // folder is unreachable (a swallowed ENOTCONN via the FolderExists failsafe above) rather than
+                // truly empty, that rail is what stops this from mass-marking the movie's files missing. Keep them paired.
                 CleanMediaFiles(movie, new List<string>());
                 CompletedScanning(movie, new List<string>());
 

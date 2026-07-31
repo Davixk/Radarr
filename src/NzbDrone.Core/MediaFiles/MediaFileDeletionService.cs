@@ -129,28 +129,33 @@ namespace NzbDrone.Core.MediaFiles
         [EventHandleOrder(EventHandleOrder.Last)]
         public void Handle(MovieFileDeletedEvent message)
         {
-            if (_configService.DeleteEmptyFolders)
+            // fork5: never delete the movie folder on a MissingFromDisk deletion (ports Sonarr's stock guard).
+            // The dangling-symlink reaper marks records MissingFromDisk, and the operator requires it to remove
+            // only the symlink, never the directory; empty movie folders are a normal steady state here.
+            if (!_configService.DeleteEmptyFolders || message.Reason == DeleteMediaFileReason.MissingFromDisk)
             {
-                var movie = message.MovieFile.Movie;
-                var moviePath = movie.Path;
-                var folder = message.MovieFile.Path.GetParentPath();
+                return;
+            }
 
-                while (moviePath.IsParentPath(folder))
+            var movie = message.MovieFile.Movie;
+            var moviePath = movie.Path;
+            var folder = message.MovieFile.Path.GetParentPath();
+
+            while (moviePath.IsParentPath(folder))
+            {
+                if (_diskProvider.FolderExists(folder))
                 {
-                    if (_diskProvider.FolderExists(folder))
-                    {
-                        _diskProvider.RemoveEmptySubfolders(folder);
-                    }
-
-                    folder = folder.GetParentPath();
+                    _diskProvider.RemoveEmptySubfolders(folder);
                 }
 
-                _diskProvider.RemoveEmptySubfolders(moviePath);
+                folder = folder.GetParentPath();
+            }
 
-                if (_diskProvider.FolderEmpty(moviePath))
-                {
-                    _diskProvider.DeleteFolder(moviePath, true);
-                }
+            _diskProvider.RemoveEmptySubfolders(moviePath);
+
+            if (_diskProvider.FolderEmpty(moviePath))
+            {
+                _diskProvider.DeleteFolder(moviePath, true);
             }
         }
     }

@@ -150,6 +150,16 @@ namespace NzbDrone.Common.Disk
             return Directory.EnumerateFileSystemEntries(path).Empty();
         }
 
+        // Errno-preserving directory probe for the reaper walk-up: deliberately does NOT catch. An absent
+        // directory throws DirectoryNotFoundException (ENOENT) and a transport fault throws IOException
+        // (ENOTCONN/EIO), so the caller can tell a genuinely gone directory apart from a broken mount.
+        public IEnumerable<string> GetFileSystemEntries(string path)
+        {
+            Ensure.That(path, () => path).IsValidPath(PathValidationType.CurrentOs);
+
+            return Directory.EnumerateFileSystemEntries(path);
+        }
+
         public IEnumerable<string> GetDirectories(string path)
         {
             Ensure.That(path, () => path).IsValidPath(PathValidationType.CurrentOs);

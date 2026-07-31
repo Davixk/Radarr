@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using NLog;
 using NzbDrone.Common.Disk;
-using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Lifecycle;
 using NzbDrone.Core.Messaging.Events;
@@ -17,40 +16,54 @@ namespace NzbDrone.Core.MediaFiles
         bool ShouldReap(string linkPath);
     }
 
-    // fork4: gate for the dangling-symlink reaper (b) that lives in the DiskScanService size loop. This is a
+    // fork5: gate for the dangling-symlink reaper (b) that lives in the DiskScanService size loop. This is a
     // DESTRUCTIVE feature (it deletes symlinks and marks the library file missing), so reaping is only ever
-    // allowed when the operator has declared where the symlink targets live (REAP_STORAGE_ROOT) AND that
-    // storage root reads HEALTHY this pass. The health check is what tells "a single link's target really
-    // went away" apart from "the whole backing mount is down"; a down/empty/faulting mount NEVER reaps.
+    // allowed when the storage backing the symlink target reads HEALTHY this pass. Health is derived per-link
+    // by walking UP from the target toward the filesystem root and deciding at the FIRST ancestor that
+    // exists: a populated ancestor means the backing storage is mounted and this one link's target really
+    // went away (reap); an empty ancestor (a cleanly-unmounted mountpoint) or a faulting ancestor
+    // (ENOTCONN/EIO transport fault) means the whole backing mount is down or degraded (never reap). There is
+    // no configured storage root; the anchor is discovered by the walk.
     //
-    // Knobs (read once, lazily, cached for the process lifetime):
-    //   REAP_DANGLING_SYMLINKS : bool, default true. Master switch for the reaper.
-    //   REAP_STORAGE_ROOT      : comma-separated list of storage-root directories the symlink targets live
-    //                            under. UNSET by default; while unset the reaper no-ops (safe default even
-    //                            though the reaper defaults on): (b) deletes nothing until the operator
-    //                            declares where the backing storage root is.
+    // The ancestor probe MUST use an errno-preserving enumerate (GetFileSystemEntries ->
+    // Directory.EnumerateFileSystemEntries), which THROWS DirectoryNotFoundException for an absent dir and
+    // IOException for a transport fault. It must NOT use Directory.Exists / FolderExists / FolderEmpty: those
+    // swallow every error and return false, so a faulting mount would look "absent" and the walk would escape
+    // UP past the dead mountpoint into the populated host filesystem and reap the whole library.
+    //
+    // Knob (read once, lazily, cached for the process lifetime):
+    //   REAP_DANGLING_SYMLINKS : bool, default FALSE. Master switch for the reaper. The operator sets it true
+    //                            to enable; while unset the reaper no-ops.
     public class ScanReapGuard : IScanReapGuard, IHandle<ApplicationStartedEvent>
     {
-        private const bool DEFAULT_REAP_ENABLED = true;
+        private const bool DEFAULT_REAP_ENABLED = false;
 
-        // Root health is cached per distinct root for a short window so a 63k-entry directory is probed at
-        // most once per root per pass rather than once per file.
-        private static readonly TimeSpan RootHealthTtl = TimeSpan.FromSeconds(30);
+        // Ancestor state is cached per distinct dir for a short window so a shared ancestor (e.g. a 63k-entry
+        // storage root) is probed at most once per dir per pass rather than once per file.
+        private static readonly TimeSpan AncestorStateTtl = TimeSpan.FromSeconds(30);
 
         private readonly IDiskProvider _diskProvider;
         private readonly Logger _logger;
 
-        private readonly ConcurrentDictionary<string, (bool Healthy, DateTime CheckedUtc)> _rootHealth = new ConcurrentDictionary<string, (bool, DateTime)>();
+        private readonly ConcurrentDictionary<string, (AncestorState State, DateTime CheckedUtc)> _ancestorState = new ConcurrentDictionary<string, (AncestorState, DateTime)>();
 
         private readonly object _initLock = new object();
         private bool _initialized;
         private bool _reaperEnabled;
-        private string[] _storageRoots;
 
         public ScanReapGuard(IDiskProvider diskProvider, Logger logger)
         {
             _diskProvider = diskProvider;
             _logger = logger;
+        }
+
+        // Classification of a single ancestor directory as seen through an errno-preserving enumerate.
+        private enum AncestorState
+        {
+            Absent,
+            Populated,
+            Empty,
+            Faulting
         }
 
         public bool ReaperEnabled
@@ -63,39 +76,21 @@ namespace NzbDrone.Core.MediaFiles
         }
 
         // Called when a tracked file's size read threw ENOENT (FileNotFoundException /
-        // DirectoryNotFoundException). Returns true (caller reaps) ONLY when ALL hold:
-        //   - the reaper is enabled AND at least one REAP_STORAGE_ROOT is configured
-        //   - the link's target path resolves under one of the configured storage roots
-        //   - that storage root is HEALTHY this pass (see IsRootHealthy)
-        // Reaps on the FIRST ENOENT under a healthy root: no consecutive-pass wait, no strike counting.
+        // DirectoryNotFoundException). Returns true (caller reaps) ONLY when the reaper is enabled AND the
+        // storage backing the link's target reads healthy via the ancestor walk-up. Reaps on the FIRST ENOENT
+        // under healthy storage: no consecutive-pass wait, no strike counting.
         public bool ShouldReap(string linkPath)
         {
             EnsureInitialized();
 
-            // Reaper off, or the operator has not declared a storage root: never reap (safe default).
-            if (!_reaperEnabled || _storageRoots.Length == 0)
+            if (!_reaperEnabled)
             {
                 return false;
             }
 
             var target = ResolveTarget(linkPath);
 
-            if (target == null)
-            {
-                // Target could not be derived: cannot verify against a storage root, so never reap.
-                return false;
-            }
-
-            var root = MatchStorageRoot(target);
-
-            if (root == null)
-            {
-                // Target is not under any configured storage root: cannot verify, so never reap.
-                return false;
-            }
-
-            // Root absent, empty, or faulting => never reap.
-            return IsRootHealthy(root);
+            return IsStorageHealthyByWalkUp(target);
         }
 
         public void Handle(ApplicationStartedEvent message)
@@ -104,9 +99,8 @@ namespace NzbDrone.Core.MediaFiles
 
             // Overlay-loaded proof: this line exists only in the patched core, so the wording is identical
             // across both forks and can be grepped to confirm the overlay loaded.
-            _logger.Info("fork4 config: dangling-symlink reaper {0}, storage roots [{1}], cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={2}ms",
+            _logger.Info("fork5 config: dangling-symlink reaper {0} (storage health via target walk-up), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms",
                 _reaperEnabled ? "ENABLED" : "disabled",
-                string.Join(",", _storageRoots),
                 ConnectionStringFactory.GetBusyTimeout());
         }
 
@@ -125,14 +119,13 @@ namespace NzbDrone.Core.MediaFiles
                 }
 
                 _reaperEnabled = GetReaperEnabled();
-                _storageRoots = GetStorageRoots();
                 _initialized = true;
             }
         }
 
-        // Resolves the absolute path the size read was actually pointing at, so it can be matched against a
-        // storage root. LinkTarget is non-throwing and does not follow the link; null means "not a symlink"
-        // (a plain file that read ENOENT), in which case the file's own path is what must sit under a root.
+        // Resolves the absolute path the size read was actually pointing at, so the walk-up starts from the
+        // real target. LinkTarget is non-throwing and does not follow the link; null means "not a symlink"
+        // (a plain file that read ENOENT), in which case the file's own path is the target.
         private string ResolveTarget(string linkPath)
         {
             string linkTarget;
@@ -161,47 +154,74 @@ namespace NzbDrone.Core.MediaFiles
             return linkTarget;
         }
 
-        private string MatchStorageRoot(string target)
+        // Walk UP from the target's parent to the FIRST ancestor that exists, and decide there. Absent
+        // ancestors are skipped (keep walking up); the first existing ancestor anchors the decision: populated
+        // means healthy storage (reap), empty or faulting means the backing mount is down/degraded (abort).
+        // Stops BEFORE the filesystem/drive root and aborts if the walk reaches it without anchoring.
+        private bool IsStorageHealthyByWalkUp(string target)
         {
-            foreach (var root in _storageRoots)
+            var dir = Path.GetDirectoryName(target);
+
+            while (dir != null && Path.GetPathRoot(dir) != dir)
             {
-                if (target.PathEquals(root) || root.IsParentPath(target))
+                switch (ProbeAncestor(dir))
                 {
-                    return root;
+                    case AncestorState.Absent:
+                        dir = Path.GetDirectoryName(dir);
+                        continue;
+                    case AncestorState.Populated:
+                        return true;
+                    case AncestorState.Empty:
+                        return false;
+                    case AncestorState.Faulting:
+                        return false;
                 }
             }
 
-            return null;
+            return false;
         }
 
-        private bool IsRootHealthy(string root)
+        private AncestorState ProbeAncestor(string dir)
         {
             var now = DateTime.UtcNow;
 
-            if (_rootHealth.TryGetValue(root, out var cached) && now - cached.CheckedUtc < RootHealthTtl)
+            if (_ancestorState.TryGetValue(dir, out var cached) && now - cached.CheckedUtc < AncestorStateTtl)
             {
-                return cached.Healthy;
+                return cached.State;
             }
 
-            var healthy = ProbeRoot(root);
-            _rootHealth[root] = (healthy, now);
+            var state = ClassifyAncestor(dir);
+            _ancestorState[dir] = (state, now);
 
-            return healthy;
+            return state;
         }
 
-        private bool ProbeRoot(string root)
+        // The critical safety point: this uses an errno-preserving enumerate. An absent dir throws
+        // DirectoryNotFoundException / FileNotFoundException (ENOENT) and a transport fault throws IOException
+        // (ENOTCONN/EIO). A swallowing existence check would report a faulting mount as absent and let the
+        // walk escape up past the dead mountpoint into the populated host filesystem.
+        private AncestorState ClassifyAncestor(string dir)
         {
             try
             {
-                // Absent or empty => unhealthy. FolderEmpty enumerates lazily (only the first entry is
-                // pulled), so a 63k-entry root is never materialized. Any transport fault (EIO / ENOTCONN)
-                // raised while probing throws and is treated as unhealthy below.
-                return _diskProvider.FolderExists(root) && !_diskProvider.FolderEmpty(root);
+                var hasEntry = _diskProvider.GetFileSystemEntries(dir).Any();
+                return hasEntry ? AncestorState.Populated : AncestorState.Empty;
             }
-            catch (Exception ex)
+            catch (DirectoryNotFoundException)
             {
-                _logger.Debug(ex, "Storage root health check failed for {0}; treating as unhealthy and not reaping this pass", root);
-                return false;
+                return AncestorState.Absent;
+            }
+            catch (FileNotFoundException)
+            {
+                return AncestorState.Absent;
+            }
+            catch (IOException)
+            {
+                return AncestorState.Faulting;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return AncestorState.Faulting;
             }
         }
 
@@ -215,21 +235,6 @@ namespace NzbDrone.Core.MediaFiles
             }
 
             return DEFAULT_REAP_ENABLED;
-        }
-
-        private static string[] GetStorageRoots()
-        {
-            var raw = Environment.GetEnvironmentVariable("REAP_STORAGE_ROOT");
-
-            if (raw.IsNullOrWhiteSpace())
-            {
-                return Array.Empty<string>();
-            }
-
-            return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                      .Select(root => root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-                      .Where(root => root.Length > 0)
-                      .ToArray();
         }
     }
 }

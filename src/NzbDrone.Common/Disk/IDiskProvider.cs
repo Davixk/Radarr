@@ -22,6 +22,7 @@ namespace NzbDrone.Common.Disk
         bool FileExists(string path, StringComparison stringComparison);
         bool FolderWritable(string path);
         bool FolderEmpty(string path);
+        IEnumerable<string> GetFileSystemEntries(string path);
         IEnumerable<string> GetDirectories(string path);
         IEnumerable<string> GetFiles(string path, bool recursive);
         long GetFolderSize(string path);
