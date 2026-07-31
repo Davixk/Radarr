@@ -212,6 +212,39 @@ namespace NzbDrone.Common.Disk
             return fi.Length;
         }
 
+        public long GetFileSizeStrict(string path)
+        {
+            Ensure.That(path, () => path).IsValidPath(PathValidationType.CurrentOs);
+
+            var fi = new FileInfo(path);
+
+            // Like GetFileSize but WITHOUT the FileExists pre-guard (which swallows ENOTCONN/EIO and masks
+            // them as a synthetic FileNotFoundException). Removing it lets the real error propagate: a
+            // genuinely missing target throws FileNotFoundException / DirectoryNotFoundException (ENOENT)
+            // while a transport fault (ENOTCONN / EIO) throws a plain IOException, so a caller can tell a
+            // dead link apart from a broken mount.
+            if (fi.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                // Read the immediate target with readlink (LinkTarget never throws and never follows), then
+                // stat that target directly so the target's real errno surfaces: a dead target throws
+                // FileNotFoundException (ENOENT), a faulting mount throws IOException. This is deliberately
+                // NOT ResolveLinkTarget(true), which itself throws IOException when the final target is
+                // missing and would make a dangling link indistinguishable from a transport fault.
+                var linkTarget = fi.LinkTarget;
+
+                if (linkTarget != null)
+                {
+                    var targetPath = Path.IsPathRooted(linkTarget)
+                        ? linkTarget
+                        : Path.Combine(Path.GetDirectoryName(path) ?? string.Empty, linkTarget);
+
+                    return new FileInfo(targetPath).Length;
+                }
+            }
+
+            return fi.Length;
+        }
+
         public void CreateFolder(string path)
         {
             Ensure.That(path, () => path).IsValidPath(PathValidationType.CurrentOs);

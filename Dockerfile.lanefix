@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1
-# Overlay image for the command-queue-lane fix.
-# Builds Radarr.Core.dll + Radarr.Api.V3.dll from source with the base image's
-# AssemblyVersion so they bind against the untouched sibling assemblies, then
-# drops just those two DLLs onto the pinned home-operations base image.
+# Overlay image for the command-queue-lane fix (fork4).
+# Builds Radarr.Common.dll + Radarr.Core.dll + Radarr.Api.V3.dll from source with the base
+# image's AssemblyVersion so they bind against the untouched sibling assemblies, then drops
+# those three DLLs onto the pinned home-operations base image. Common is included because fork4
+# adds DiskProviderBase.GetFileSizeStrict (in *.Common) which Core now calls, so the stock base
+# Common would MissingMethodException without it.
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 # Must match the base image's app version so the rebuilt assemblies bind against
@@ -15,12 +17,12 @@ RUN dotnet build src/Radarr.Api.V3/Radarr.Api.V3.csproj \
       -p:SolutionDir=/src/src/ \
       -p:AssemblyVersion=${ASSEMBLY_VERSION} \
       -p:TreatWarningsAsErrors=false \
-  && echo "=== located Core/Api.V3 assemblies ===" \
-  && find /src -name 'Radarr.Core.dll' -o -name 'Radarr.Api.V3.dll' \
+  && echo "=== located overlay assemblies ===" \
+  && find /src -name 'Radarr.Common.dll' -o -name 'Radarr.Core.dll' -o -name 'Radarr.Api.V3.dll' \
   && mkdir -p /overlay \
-  && cp /src/_output/net8.0/Radarr.Core.dll /src/_output/net8.0/Radarr.Api.V3.dll /overlay/ \
+  && cp /src/_output/net8.0/Radarr.Common.dll /src/_output/net8.0/Radarr.Core.dll /src/_output/net8.0/Radarr.Api.V3.dll /overlay/ \
   && ls -la /overlay
 
 FROM ghcr.io/home-operations/radarr@sha256:0756fffa75b30219e3dbac8d027a5389f53cbb34ae83fa4b0976c1b0524c8eb1
 LABEL org.opencontainers.image.source="https://github.com/Davixk/Radarr"
-COPY --from=build /overlay/Radarr.Core.dll /overlay/Radarr.Api.V3.dll /app/bin/
+COPY --from=build /overlay/Radarr.Common.dll /overlay/Radarr.Core.dll /overlay/Radarr.Api.V3.dll /app/bin/

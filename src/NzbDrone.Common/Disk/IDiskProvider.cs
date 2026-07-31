@@ -26,6 +26,7 @@ namespace NzbDrone.Common.Disk
         IEnumerable<string> GetFiles(string path, bool recursive);
         long GetFolderSize(string path);
         long GetFileSize(string path);
+        long GetFileSizeStrict(string path);
         void CreateFolder(string path);
         void DeleteFile(string path);
         void CloneFile(string source, string destination, bool overwrite = false);

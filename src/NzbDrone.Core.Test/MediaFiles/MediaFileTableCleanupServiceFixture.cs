@@ -116,5 +116,38 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IMovieService>().Verify(c => c.UpdateMovie(It.IsAny<Movie>()), Times.Never());
         }
+
+        [Test]
+        public void Clean_skips_all_deletes_when_enumeration_empty_but_records_exist()
+        {
+            var movieFiles = Builder<MovieFile>.CreateListOfSize(10)
+                .Build();
+
+            GivenMovieFiles(movieFiles);
+
+            // fork4: disk enumeration returned nothing while records exist (a likely mount failure), so the
+            // rail must bail out before deleting anything.
+            Subject.Clean(_movie, new List<string>());
+
+            Mocker.GetMock<IMediaFileService>().Verify(c => c.Delete(It.IsAny<MovieFile>(), It.IsAny<DeleteMediaFileReason>()), Times.Never());
+        }
+
+        [Test]
+        public void Clean_still_deletes_missing_when_some_files_on_disk()
+        {
+            var movieFiles = Builder<MovieFile>.CreateListOfSize(3)
+                .Build();
+
+            movieFiles[0].RelativePath = DELETED_PATH;
+
+            GivenMovieFiles(movieFiles);
+
+            // Two of the three files enumerate, so the empty-enum rail does NOT fire and only the truly
+            // missing record is deleted.
+            Subject.Clean(_movie, FilesOnDisk(movieFiles.Where(e => e.RelativePath != DELETED_PATH)));
+
+            Mocker.GetMock<IMediaFileService>().Verify(c => c.Delete(It.Is<MovieFile>(e => e.RelativePath == DELETED_PATH), DeleteMediaFileReason.MissingFromDisk), Times.Once());
+            Mocker.GetMock<IMediaFileService>().Verify(c => c.Delete(It.IsAny<MovieFile>(), It.IsAny<DeleteMediaFileReason>()), Times.Once());
+        }
     }
 }

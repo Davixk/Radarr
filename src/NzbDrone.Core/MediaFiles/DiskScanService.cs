@@ -41,6 +41,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IMediaFileTableCleanupService _mediaFileTableCleanupService;
         private readonly IRootFolderService _rootFolderService;
         private readonly IUpdateMediaInfo _updateMediaInfoService;
+        private readonly IScanReapGuard _scanReapGuard;
         private readonly IEventAggregator _eventAggregator;
         private readonly Logger _logger;
 
@@ -53,6 +54,7 @@ namespace NzbDrone.Core.MediaFiles
                                IMediaFileTableCleanupService mediaFileTableCleanupService,
                                IRootFolderService rootFolderService,
                                IUpdateMediaInfo updateMediaInfoService,
+                               IScanReapGuard scanReapGuard,
                                IEventAggregator eventAggregator,
                                Logger logger)
         {
@@ -65,6 +67,7 @@ namespace NzbDrone.Core.MediaFiles
             _mediaFileTableCleanupService = mediaFileTableCleanupService;
             _rootFolderService = rootFolderService;
             _updateMediaInfoService = updateMediaInfoService;
+            _scanReapGuard = scanReapGuard;
             _eventAggregator = eventAggregator;
             _logger = logger;
         }
@@ -149,7 +152,41 @@ namespace NzbDrone.Core.MediaFiles
             foreach (var file in movieFiles)
             {
                 var path = Path.Combine(movie.Path, file.RelativePath);
-                var fileSize = _diskProvider.GetFileSize(path);
+
+                long fileSize;
+
+                try
+                {
+                    // fork4: errno-preserving read. GetFileSizeStrict has no FileExists pre-guard, so a
+                    // genuinely missing target surfaces as ENOENT (FileNotFoundException /
+                    // DirectoryNotFoundException) while a transport fault surfaces as a plain IOException.
+                    fileSize = _diskProvider.GetFileSizeStrict(path);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException)
+                {
+                    // (a) ENOENT: the target is gone (dead symlink or absent file). Never abort the pass on
+                    // this. (b) When the storage root is healthy the dead link is reaped: unlink the symlink
+                    // inode and mark the record missing (no blocklist, no history); otherwise skip this pass.
+                    if (_scanReapGuard.ShouldReap(path))
+                    {
+                        _logger.Warn("Reaping dead symlink and marking missing: {0}", path);
+                        _diskProvider.DeleteFile(path);
+                        _mediaFileService.Delete(file, DeleteMediaFileReason.MissingFromDisk);
+                    }
+                    else
+                    {
+                        _logger.Debug("File not accessible during scan, skipping this pass: {0}", path);
+                    }
+
+                    continue;
+                }
+                catch (IOException ex)
+                {
+                    // NOT ENOENT (ENOTCONN / EIO): the storage transport is faulting, not the content. Do
+                    // not act; abort the command so (b) cannot run against a broken mount even mid-pass.
+                    _logger.Warn("Storage fault during scan (not a missing file); aborting scan to avoid acting on a broken mount: {0} ({1})", path, ex.Message);
+                    throw;
+                }
 
                 if (file.Size == fileSize)
                 {
