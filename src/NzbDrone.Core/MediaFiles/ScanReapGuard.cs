@@ -99,7 +99,7 @@ namespace NzbDrone.Core.MediaFiles
 
             // Overlay-loaded proof: this line exists only in the patched core, so the wording is identical
             // across both forks and can be grepped to confirm the overlay loaded.
-            _logger.Info("fork5 config: dangling-symlink reaper {0} (storage health via target walk-up), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms",
+            _logger.Info("fork6 config: dangling-symlink reaper {0} (storage health via target walk-up), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms",
                 _reaperEnabled ? "ENABLED" : "disabled",
                 ConnectionStringFactory.GetBusyTimeout());
         }

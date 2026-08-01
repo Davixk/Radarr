@@ -197,7 +197,11 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
                 catch (Exception e)
                 {
                     _logger.Warn(e, "Couldn't import movie " + localMovie);
-                    importResults.Add(new ImportResult(importDecision, "Failed to import movie"));
+
+                    // fork6: surface the real exception message instead of collapsing every failure to a bare
+                    // "Failed to import movie". The reason is already in hand and was being discarded, leaving
+                    // the operator, UI and API with no cause.
+                    importResults.Add(new ImportResult(importDecision, "Failed to import movie: " + e.Message));
                 }
             }
 

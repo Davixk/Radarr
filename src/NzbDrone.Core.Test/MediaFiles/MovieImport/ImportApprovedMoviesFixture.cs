@@ -100,6 +100,21 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
         }
 
         [Test]
+        public void should_surface_the_exception_message_when_import_throws()
+        {
+            GivenExistingFileOnDisk();
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.Add(It.IsAny<MovieFile>()))
+                  .Throws(new System.Exception("a specific import failure reason"));
+
+            var result = Subject.Import(_approvedDecisions, false);
+
+            result.Should().HaveCount(1);
+            result.First().Errors.Should().Contain(e => e.Contains("a specific import failure reason"));
+        }
+
+        [Test]
         public void should_only_import_approved()
         {
             GivenExistingFileOnDisk();
