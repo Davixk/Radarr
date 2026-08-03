@@ -112,7 +112,11 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 DownloadItem = downloadItem,
                 Protocol = downloadClient.Protocol,
                 IsTrackable = true,
-                HasNotifiedManualInteractionRequired = existingItem?.HasNotifiedManualInteractionRequired ?? false
+                HasNotifiedManualInteractionRequired = existingItem?.HasNotifiedManualInteractionRequired ?? false,
+
+                // fork7 #4: carry the probe-timeout strike count across a rebuild (mirrors the sticky flag
+                // above); it resets naturally when the download restarts (goes back to Downloading).
+                ConsecutiveProbeTimeouts = existingItem?.ConsecutiveProbeTimeouts ?? 0
             };
 
             try

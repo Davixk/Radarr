@@ -95,7 +95,7 @@ namespace NzbDrone.Core.Download
                 // Expensive read-only DECIDE phase, fanned out across downloads with bounded concurrency
                 // and abandon-on-timeout. A wedged probe leaves its PendingImport.Batch null so the commit
                 // phase skips it while the healthy downloads still import.
-                ImportProbePool.Run(probeIndexes.Count, j =>
+                var timedOut = ImportProbePool.Run(probeIndexes.Count, j =>
                 {
                     var index = probeIndexes[j];
 
@@ -108,6 +108,36 @@ namespace NzbDrone.Core.Download
                         _logger.Debug(e, "Failed to compute import decisions for download: {0}", trackedDownloads[index].DownloadItem.Title);
                     }
                 });
+
+                // fork7 #4: a download whose probe was abandoned on timeout this pass is on track to be
+                // re-probed into the same unreadable file forever. Count CONSECUTIVE probe-timeouts per
+                // download and, at IMPORT_PROBE_TIMEOUT_STRIKES, fail it so it is blocklisted and re-searched
+                // instead of retried indefinitely. A throw in ProbeImport is caught above and resolves to
+                // timedOut=false, so only a genuine abandon-on-timeout counts; any non-timeout probe resets the
+                // streak. Fail() sets FailedPending, actioned by the commit loop below in this same pass.
+                var strikes = ImportProbePool.GetTimeoutStrikes();
+
+                if (strikes > 0)
+                {
+                    for (var j = 0; j < probeIndexes.Count; j++)
+                    {
+                        var trackedDownload = trackedDownloads[probeIndexes[j]];
+
+                        if (timedOut[j])
+                        {
+                            if (++trackedDownload.ConsecutiveProbeTimeouts >= strikes)
+                            {
+                                trackedDownload.ConsecutiveProbeTimeouts = 0;
+                                _logger.Warn("Import probe timed out {0}x for {1}; failing it for re-search", strikes, trackedDownload.DownloadItem.Title);
+                                trackedDownload.Fail();
+                            }
+                        }
+                        else
+                        {
+                            trackedDownload.ConsecutiveProbeTimeouts = 0;
+                        }
+                    }
+                }
             }
 
             for (var i = 0; i < trackedDownloads.Count; i++)

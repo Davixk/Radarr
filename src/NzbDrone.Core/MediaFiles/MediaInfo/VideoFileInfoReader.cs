@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using FFMpegCore;
 using NLog;
 using NzbDrone.Common.Disk;
@@ -23,6 +25,12 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
 
         public const int MINIMUM_MEDIA_INFO_SCHEMA_REVISION = 14;
         public const int CURRENT_MEDIA_INFO_SCHEMA_REVISION = 14;
+
+        // fork7: the exact fixed argument prefixes Servarr.FFMpegCore's GetStreamJson / GetFrameJson emit
+        // (confirmed against the 4.7-servarr source and the live container argv). RunFfprobe replicates them
+        // byte-for-byte so FFProbe.AnalyseStreamJson / AnalyseFrameJson parse the output unchanged.
+        private const string StreamProbeArgs = "-loglevel error -print_format json -show_format -sexagesimal -show_streams";
+        private const string FrameProbeArgs = "-loglevel error -print_format json -show_frames -v quiet -sexagesimal";
 
         private static readonly string[] ValidHdrColourPrimaries = { "bt2020" };
         private static readonly string[] HlgTransferFunctions = { "arib-std-b67" };
@@ -60,18 +68,25 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
                 return null;
             }
 
+            // fork7 (upstream 32d9cd9ea): .strm / .m3u point at a remote URL, so probing them makes ffprobe
+            // read the network and can wedge it indefinitely. Skip the probe entirely, same as disk images.
+            if (MediaFileExtensions.StreamingExtensions.Contains(Path.GetExtension(filename)))
+            {
+                return null;
+            }
+
             // TODO: Cache media info by path, mtime and length so we don't need to read files multiple times
             try
             {
                 _logger.Debug("Getting media info from {0}", filename);
-                var ffprobeOutput = FFProbe.GetStreamJson(filename, ffOptions: new FFOptions { ExtraArguments = "-probesize 50000000" });
+                var ffprobeOutput = RunFfprobe(StreamProbeArgs, "-probesize 50000000", filename);
 
                 var analysis = FFProbe.AnalyseStreamJson(ffprobeOutput);
                 var primaryVideoStream = GetPrimaryVideoStream(analysis);
 
                 if (analysis.PrimaryAudioStream?.ChannelLayout.IsNullOrWhiteSpace() ?? true)
                 {
-                    ffprobeOutput = FFProbe.GetStreamJson(filename, ffOptions: new FFOptions { ExtraArguments = "-probesize 150000000 -analyzeduration 150000000" });
+                    ffprobeOutput = RunFfprobe(StreamProbeArgs, "-probesize 150000000 -analyzeduration 150000000", filename);
                     analysis = FFProbe.AnalyseStreamJson(ffprobeOutput);
                 }
 
@@ -118,7 +133,7 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
                 if (PqTransferFunctions.Contains(mediaInfoModel.VideoTransferCharacteristics))
                 {
                     var videoStreamIndex = analysis.VideoStreams.FindIndex(stream => stream.Index == primaryVideoStream?.Index);
-                    var frameOutput = FFProbe.GetFrameJson(filename, ffOptions: new () { ExtraArguments = $"-read_intervals \"%+#1\" -select_streams v:{(videoStreamIndex == -1 ? 0 : videoStreamIndex)}" });
+                    var frameOutput = RunFfprobe(FrameProbeArgs, $"-read_intervals \"%+#1\" -select_streams v:{(videoStreamIndex == -1 ? 0 : videoStreamIndex)}", filename);
                     mediaInfoModel.RawFrameData = frameOutput;
 
                     frames = FFProbe.AnalyseFrameJson(frameOutput);
@@ -145,6 +160,53 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
             var info = GetMediaInfo(filename);
 
             return info?.RunTime;
+        }
+
+        // fork7: spawn ffprobe as a Process WE own so a probe abandoned on IMPORT_PROBE_TIMEOUT can be
+        // SIGKILLed by ImportProbePool (via ProbeProcessRegistry) instead of leaking in D-state. The args are
+        // byte-identical to what Servarr.FFMpegCore's GetStreamJson / GetFrameJson emit, so the returned stdout
+        // parses unchanged through FFProbe.AnalyseStreamJson / AnalyseFrameJson. Registration is a no-op
+        // outside the probe pool (ProbeProcessRegistry.CurrentSlot is null), so manual/refresh media-info
+        // reads behave exactly as before. On a kill the stdout pipe closes, ReadToEnd returns the partial
+        // buffer, AnalyseStreamJson then throws on the truncated JSON and GetMediaInfo returns null; the pool
+        // has already flagged the item timed-out, so the null result is not acted on as a real read.
+        private string RunFfprobe(string baseArgs, string extraArgs, string filename)
+        {
+            var binary = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = binary,
+                Arguments = $"{baseArgs} {extraArgs} \"{filename}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var process = new Process { StartInfo = startInfo };
+
+            process.Start();
+            ProbeProcessRegistry.Attach(process);
+
+            try
+            {
+                // Drain stderr on a separate task so a chatty ffprobe cannot deadlock by filling the stderr
+                // pipe while we block reading stdout. Read stdout to EOF, then wait for exit.
+                var stderrTask = process.StandardError.ReadToEndAsync();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+                stderrTask.GetAwaiter().GetResult();
+
+                return output;
+            }
+            finally
+            {
+                ProbeProcessRegistry.Detach(process);
+            }
         }
 
         private static TimeSpan GetBestRuntime(TimeSpan? audio, TimeSpan? video, TimeSpan general)

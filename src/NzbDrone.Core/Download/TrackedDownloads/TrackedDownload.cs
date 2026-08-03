@@ -19,6 +19,11 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public bool IsTrackable { get; set; }
         public bool HasNotifiedManualInteractionRequired { get; set; }
 
+        // fork7 #4: consecutive ProcessMonitoredDownloads passes on which this download's import probe timed
+        // out. When it reaches IMPORT_PROBE_TIMEOUT_STRIKES the download is failed (blocklist + re-search)
+        // instead of retried into the same unreadable file forever. Reset on any non-timeout probe outcome.
+        public int ConsecutiveProbeTimeouts { get; set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();

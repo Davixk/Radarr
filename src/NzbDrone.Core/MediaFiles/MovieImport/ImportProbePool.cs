@@ -21,6 +21,7 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
         private const int PROBE_THREADS_LOWER_BOUND = 1;
         private const int PROBE_THREADS_UPPER_BOUND = 16;
         private const int DEFAULT_PROBE_TIMEOUT_SECONDS = 0;
+        private const int DEFAULT_PROBE_TIMEOUT_STRIKES = 3;
 
         // Set on a pool worker thread while it runs body(). Because the pool is now nested (a per-download
         // fan-out inside DownloadProcessingService can itself fan-out across a download's files in
@@ -91,6 +92,24 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
             seconds = Math.Max(0, seconds);
 
             return TimeSpan.FromSeconds(seconds);
+        }
+
+        // Reads IMPORT_PROBE_TIMEOUT_STRIKES: the number of CONSECUTIVE probe-timeouts for one completed
+        // download after which it is failed (blocklist + re-search) instead of retried into the same file
+        // forever (fork7 #4). Default 3; 0 (and any value <= 0) disables the escalation. Escalation is also
+        // effectively gated behind IMPORT_PROBE_TIMEOUT > 0, since a probe timeout only occurs on the
+        // timeout path.
+        public static int GetTimeoutStrikes()
+        {
+            var envValue = Environment.GetEnvironmentVariable("IMPORT_PROBE_TIMEOUT_STRIKES") ?? $"{DEFAULT_PROBE_TIMEOUT_STRIKES}";
+            var strikes = DEFAULT_PROBE_TIMEOUT_STRIKES;
+
+            if (int.TryParse(envValue, out var parsedStrikes))
+            {
+                strikes = parsedStrikes;
+            }
+
+            return Math.Max(0, strikes);
         }
 
         // Runs body(i) for i in [0, count) across at most 'degree' dedicated worker threads. A degree of
@@ -184,6 +203,7 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
 
             var settled = new int[count];
             var timers = new Timer[count];
+            var killSlots = new ProbeKillSlot[count];
             var sem = new SemaphoreSlim(degree);
             var countdown = new CountdownEvent(count);
             Exception firstError = null;
@@ -197,6 +217,15 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
                 if (Interlocked.Exchange(ref settled[i], 1) != 0)
                 {
                     return;
+                }
+
+                if (didTimeout)
+                {
+                    // fork7: SIGKILL the wedged ffprobe (via the slot the worker published to
+                    // ProbeProcessRegistry) BEFORE releasing the permit. Killing closes the stdout pipe the
+                    // worker is blocked reading, so the worker unwinds and the ffprobe does not leak; the OS
+                    // ffprobe count then stays bounded by the permit count for real, not just logically.
+                    killSlots[i]?.Kill();
                 }
 
                 timedOut[i] = didTimeout;
@@ -215,6 +244,12 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
 
                     var index = i;
 
+                    // fork7: publish this item's kill slot BEFORE arming the timer, so a fast timeout always
+                    // finds a non-null slot to kill. The worker sets it as its thread's current slot so the
+                    // ffprobe runner can Attach the process it spawns.
+                    var killSlot = new ProbeKillSlot();
+                    killSlots[index] = killSlot;
+
                     // Create the timer stopped, publish it, then arm it, so its callback can never run
                     // (and dispose it) before timers[index] is assigned.
                     var timer = new Timer(_ => Settle(index, true));
@@ -225,6 +260,9 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
                     {
                         // Mark this worker so any Run invoked from within body() (a nested pool) runs serially.
                         _insidePool = true;
+
+                        // fork7: make this worker's ffprobe killable on timeout (see ProbeProcessRegistry).
+                        ProbeProcessRegistry.CurrentSlot = killSlot;
 
                         try
                         {

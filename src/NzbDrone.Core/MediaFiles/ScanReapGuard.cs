@@ -6,6 +6,7 @@ using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Lifecycle;
+using NzbDrone.Core.MediaFiles.MovieImport;
 using NzbDrone.Core.Messaging.Events;
 
 namespace NzbDrone.Core.MediaFiles
@@ -99,9 +100,12 @@ namespace NzbDrone.Core.MediaFiles
 
             // Overlay-loaded proof: this line exists only in the patched core, so the wording is identical
             // across both forks and can be grepped to confirm the overlay loaded.
-            _logger.Info("fork6 config: dangling-symlink reaper {0} (storage health via target walk-up), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms",
+            _logger.Info("fork7 config: dangling-symlink reaper {0} (storage health via target walk-up, ENOENT-gap aware), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms, probe kill-on-timeout on, IMPORT_PROBE_THREADS={2} IMPORT_PROBE_TIMEOUT={3}s IMPORT_PROBE_TIMEOUT_STRIKES={4}",
                 _reaperEnabled ? "ENABLED" : "disabled",
-                ConnectionStringFactory.GetBusyTimeout());
+                ConnectionStringFactory.GetBusyTimeout(),
+                ImportProbePool.GetDegreeOfParallelism(),
+                (int)ImportProbePool.GetTimeout().TotalSeconds,
+                ImportProbePool.GetTimeoutStrikes());
         }
 
         private void EnsureInitialized()
@@ -154,25 +158,48 @@ namespace NzbDrone.Core.MediaFiles
             return linkTarget;
         }
 
-        // Walk UP from the target's parent to the FIRST ancestor that exists, and decide there. Absent
-        // ancestors are skipped (keep walking up); the first existing ancestor anchors the decision: populated
-        // means healthy storage (reap), empty or faulting means the backing mount is down/degraded (abort).
-        // Stops BEFORE the filesystem/drive root and aborts if the walk reaches it without anchoring.
+        // Walk UP from the target's parent looking for a POPULATED ancestor (healthy storage -> reap). Absent
+        // ancestors are skipped. An empty ancestor is the ambiguous case: an emptied torrent dir (content gone,
+        // storage healthy) vs a cleanly-unmounted mountpoint (storage gone). fork7 Path B disambiguates them by
+        // whether an ENOENT gap was crossed to reach it (see the Empty case). A faulting ancestor
+        // (ENOTCONN/EIO) always aborts. Stops BEFORE the filesystem/drive root and aborts if the walk reaches
+        // it without anchoring.
+        //
+        // Path A (for a future FLAT layout, where a target sits directly in the mountpoint and Path B's no-gap
+        // precondition would silently stop holding): compare a populated ancestor's st_dev to the container
+        // host reference stat("/").st_dev (obtained at runtime, no config). Measured in-container topology
+        // (radarr-debrid): storage/FUSE dev = 241, container root and /mnt = 203, so an unmounted mountpoint
+        // drops 241 -> 203 and is distinguishable from a live mount with no topology assumption. Path A needs
+        // P/Invoke stat; decypharr never produces a flat target, so Path B is correct for the current layout.
         private bool IsStorageHealthyByWalkUp(string target)
         {
             var dir = Path.GetDirectoryName(target);
+            var sawAbsent = false;
 
             while (dir != null && Path.GetPathRoot(dir) != dir)
             {
                 switch (ProbeAncestor(dir))
                 {
                     case AncestorState.Absent:
+                        sawAbsent = true;
                         dir = Path.GetDirectoryName(dir);
                         continue;
                     case AncestorState.Populated:
+                        // Healthy storage; the file (or its whole torrent dir) genuinely went away -> reap.
                         return true;
                     case AncestorState.Empty:
-                        return false;
+                        // fork7 Path B: an empty ancestor reached with NO ENOENT gap below it is an emptied
+                        // torrent dir (file gone, its directory and the storage above it still mounted) -> keep
+                        // climbing to find the populated storage root and reap. An empty ancestor reached
+                        // THROUGH an ENOENT gap is a cleanly-unmounted mountpoint (the torrent dir and __all__
+                        // are gone before it) -> abort, reap nothing.
+                        if (sawAbsent)
+                        {
+                            return false;
+                        }
+
+                        dir = Path.GetDirectoryName(dir);
+                        continue;
                     case AncestorState.Faulting:
                         return false;
                 }

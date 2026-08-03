@@ -192,6 +192,29 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void Reaper_reaps_empty_torrent_dir_when_storage_above_is_populated()
+        {
+            GivenReaperEnabled(true);
+            var movieFiles = GivenMovieFiles("dead.mkv");
+            GivenSizeReadThrows("dead.mkv", new FileNotFoundException());
+
+            var movieFolder = _movie.Path;                        // the emptied torrent dir (its file is gone)
+            var storageAll = Path.GetDirectoryName(movieFolder);  // still-mounted storage above it
+
+            // fork7 Path B: the target's own directory EXISTS but is EMPTY (the file was removed while the
+            // torrent dir and the storage above it stay mounted) and NO ENOENT gap precedes it, so the walk
+            // must climb past the empty dir, find the populated storage root, and reap. Before Path B the walk
+            // stopped at the first empty ancestor and (wrongly) aborted, leaving these links unreaped.
+            GivenAncestorEmpty(movieFolder);
+            GivenAncestorPopulated(storageAll);
+
+            Subject.Scan(_movie);
+
+            Mocker.GetMock<IDiskProvider>().Verify(s => s.DeleteFile(PathOf("dead.mkv")), Times.Once());
+            Mocker.GetMock<IMediaFileService>().Verify(s => s.Delete(movieFiles[0], DeleteMediaFileReason.MissingFromDisk), Times.Once());
+        }
+
+        [Test]
         public void Reaper_aborts_when_an_ancestor_faults()
         {
             GivenReaperEnabled(true);

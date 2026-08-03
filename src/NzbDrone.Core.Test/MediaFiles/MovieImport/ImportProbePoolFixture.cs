@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using FluentAssertions;
 using NUnit.Framework;
+using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.MovieImport;
 using NzbDrone.Test.Common;
 
@@ -67,6 +69,75 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
 
             tracker.Peak.Should().Be(OuterDegree, "the guard holds on the timeout path too: the inner pool runs serially so total concurrent probes stay bounded by the OUTER degree, not OuterDegree * InnerCount");
             tracker.TotalExecuted.Should().Be(OuterCount * InnerCount, "every nested leaf body must still execute on the timeout path");
+        }
+
+        [Test]
+        public void should_kill_the_probe_child_process_when_it_times_out()
+        {
+            // fork7: a probe abandoned on timeout must SIGKILL its ffprobe child (not leak it). Stand in a real
+            // long-lived child process for the wedged ffprobe: the body registers it with ProbeProcessRegistry
+            // exactly as VideoFileInfoReader.RunFfprobe does, then blocks on it like a wedged read. When the
+            // pool times out it must kill the process, which unblocks the read and bounds the OS process count.
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_THREADS", "1");
+            Environment.SetEnvironmentVariable("IMPORT_PROBE_TIMEOUT", "1");
+
+            Process probe = null;
+
+            try
+            {
+                var timedOut = ImportProbePool.Run(1, i =>
+                {
+                    probe = StartSleeper();
+                    ProbeProcessRegistry.Attach(probe);
+
+                    try
+                    {
+                        // Block like a wedged ffprobe read; the kill closes the process and unblocks this.
+                        probe.WaitForExit();
+                    }
+                    finally
+                    {
+                        ProbeProcessRegistry.Detach(probe);
+                    }
+                });
+
+                timedOut[0].Should().BeTrue("the blocked probe exceeded IMPORT_PROBE_TIMEOUT and must be abandoned");
+                probe.Should().NotBeNull();
+                probe.WaitForExit(5000);
+                probe.HasExited.Should().BeTrue("the pool must SIGKILL the wedged probe's child process on timeout instead of leaking it");
+            }
+            finally
+            {
+                if (probe is { HasExited: false })
+                {
+                    try
+                    {
+                        probe.Kill(entireProcessTree: true);
+                    }
+                    catch
+                    {
+                        // best-effort cleanup
+                    }
+                }
+
+                probe?.Dispose();
+            }
+        }
+
+        // Starts a real, long-lived child process to stand in for a wedged ffprobe. Cross-platform: a ~30s
+        // no-op that runs headless so the test host can SIGKILL it via the pool.
+        private static Process StartSleeper()
+        {
+            var startInfo = OperatingSystem.IsWindows()
+                ? new ProcessStartInfo("cmd.exe", "/c ping -n 30 127.0.0.1")
+                : new ProcessStartInfo("/bin/sh", "-c \"sleep 30\"");
+
+            startInfo.UseShellExecute = false;
+            startInfo.CreateNoWindow = true;
+            startInfo.RedirectStandardOutput = true;
+            startInfo.RedirectStandardError = true;
+
+            return Process.Start(startInfo);
         }
 
         // Records the peak number of leaf bodies running at the same time via a shared atomic counter. Each

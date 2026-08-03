@@ -74,6 +74,10 @@ namespace NzbDrone.Core.MediaFiles
         public static HashSet<string> Extensions => new HashSet<string>(_fileExtensions.Keys, StringComparer.OrdinalIgnoreCase);
         public static HashSet<string> DiskExtensions => new HashSet<string>(new[] { ".img", ".iso", ".vob" }, StringComparer.OrdinalIgnoreCase);
 
+        // fork7 (upstream 32d9cd9ea): extensions whose contents are a remote URL rather than local media, so
+        // they must never be handed to ffprobe (it would read the network and can wedge indefinitely).
+        public static HashSet<string> StreamingExtensions => new HashSet<string>(new[] { ".strm", ".m3u" }, StringComparer.OrdinalIgnoreCase);
+
         public static Quality GetQualityForExtension(string extension)
         {
             if (_fileExtensions.TryGetValue(extension, out var quality))
