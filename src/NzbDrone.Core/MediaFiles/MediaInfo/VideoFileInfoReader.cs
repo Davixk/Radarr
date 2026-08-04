@@ -8,6 +8,7 @@ using FFMpegCore;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
+using NzbDrone.Core.MediaFiles.MovieImport;
 
 namespace NzbDrone.Core.MediaFiles.MediaInfo
 {
@@ -162,14 +163,16 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
             return info?.RunTime;
         }
 
-        // fork7: spawn ffprobe as a Process WE own so a probe abandoned on IMPORT_PROBE_TIMEOUT can be
-        // SIGKILLed by ImportProbePool (via ProbeProcessRegistry) instead of leaking in D-state. The args are
-        // byte-identical to what Servarr.FFMpegCore's GetStreamJson / GetFrameJson emit, so the returned stdout
-        // parses unchanged through FFProbe.AnalyseStreamJson / AnalyseFrameJson. Registration is a no-op
-        // outside the probe pool (ProbeProcessRegistry.CurrentSlot is null), so manual/refresh media-info
-        // reads behave exactly as before. On a kill the stdout pipe closes, ReadToEnd returns the partial
-        // buffer, AnalyseStreamJson then throws on the truncated JSON and GetMediaInfo returns null; the pool
-        // has already flagged the item timed-out, so the null result is not acted on as a real read.
+        // fork7/fork8: spawn ffprobe as a Process WE own, with a hard deadline, so no probe can wedge in
+        // D-state. The args are byte-identical to what Servarr.FFMpegCore's GetStreamJson / GetFrameJson emit,
+        // so the returned stdout parses unchanged through FFProbe.AnalyseStreamJson / AnalyseFrameJson. fork8:
+        // TimeBoundedProcess self-bounds the process at IMPORT_PROBE_TIMEOUT so EVERY spawn site is killed at
+        // the deadline, including the off-pool ones (media-info refresh on Series/MovieScannedEvent, script
+        // import, subtitle extras) that ImportProbePool never sees. The ProbeProcessRegistry Attach/Detach keeps
+        // the pool's own kill wired for pooled probes as belt-and-suspenders; it is a no-op off-pool
+        // (CurrentSlot is null). On a kill the stdout pipe closes, the partial buffer is returned,
+        // AnalyseStreamJson throws on the truncated JSON and GetMediaInfo returns null; a pooled item was also
+        // flagged timed-out, so the null is not a real read.
         private string RunFfprobe(string baseArgs, string extraArgs, string filename)
         {
             var binary = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
@@ -187,26 +190,11 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
                 StandardErrorEncoding = Encoding.UTF8
             };
 
-            using var process = new Process { StartInfo = startInfo };
-
-            process.Start();
-            ProbeProcessRegistry.Attach(process);
-
-            try
-            {
-                // Drain stderr on a separate task so a chatty ffprobe cannot deadlock by filling the stderr
-                // pipe while we block reading stdout. Read stdout to EOF, then wait for exit.
-                var stderrTask = process.StandardError.ReadToEndAsync();
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-                stderrTask.GetAwaiter().GetResult();
-
-                return output;
-            }
-            finally
-            {
-                ProbeProcessRegistry.Detach(process);
-            }
+            return TimeBoundedProcess.Run(
+                startInfo,
+                ImportProbePool.GetTimeout(),
+                ProbeProcessRegistry.Attach,
+                ProbeProcessRegistry.Detach);
         }
 
         private static TimeSpan GetBestRuntime(TimeSpan? audio, TimeSpan? video, TimeSpan general)
