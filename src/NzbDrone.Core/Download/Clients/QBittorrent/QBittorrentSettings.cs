@@ -83,6 +83,13 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         [FieldDefinition(14, Label = "DownloadClientQbittorrentSettingsContentLayout", Type = FieldType.Select, SelectOptions = typeof(QBittorrentContentLayout), HelpText = "DownloadClientQbittorrentSettingsContentLayoutHelpText")]
         public int ContentLayout { get; set; }
 
+        // fork10: literal Label/HelpText (not localization keys) on purpose. The overlay ships only the rebuilt
+        // *.Core/*.Common/*.Api.V3 DLLs, NOT Localization/Core/en.json (loaded from disk), so a key would render
+        // as the raw key string; GetLocalizedString falls back to returning the phrase verbatim, so a literal
+        // shows correctly with no en.json shipped. Default false preserves upstream behaviour (error -> Warning).
+        [FieldDefinition(15, Label = "Report Errored Torrents as Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "When qBittorrent reports a torrent in the error state, treat it as a failed download so it is blocklisted and re-searched instead of only flagging a warning. The torrent is also removed from the client when Remove is enabled for failed downloads. Off by default; intended for a qBittorrent-compatible client (such as a debrid shim) where 'error' means a terminal failure.")]
+        public bool ErrorReportedAsFailed { get; set; }
+
         public override NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));

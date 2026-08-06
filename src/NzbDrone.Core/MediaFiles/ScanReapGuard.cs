@@ -100,13 +100,12 @@ namespace NzbDrone.Core.MediaFiles
 
             // Overlay-loaded proof: this line exists only in the patched core, so the wording is identical
             // across both forks and can be grepped to confirm the overlay loaded.
-            _logger.Info("fork9 config: dangling-symlink reaper {0} (storage health via target walk-up, ENOENT-gap aware), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms, probe kill-on-timeout on (all spawn sites), IMPORT_PROBE_THREADS={2} IMPORT_PROBE_TIMEOUT={3}s IMPORT_PROBE_TIMEOUT_STRIKES={4}, QBIT_ERROR_AS_FAILED={5}",
+            _logger.Info("fork10 config: dangling-symlink reaper {0} (storage health via target walk-up, ENOENT-gap aware), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms, probe kill-on-timeout on (all spawn sites), IMPORT_PROBE_THREADS={2} IMPORT_PROBE_TIMEOUT={3}s IMPORT_PROBE_TIMEOUT_STRIKES={4}",
                 _reaperEnabled ? "ENABLED" : "disabled",
                 ConnectionStringFactory.GetBusyTimeout(),
                 ImportProbePool.GetDegreeOfParallelism(),
                 (int)ImportProbePool.GetTimeout().TotalSeconds,
-                ImportProbePool.GetTimeoutStrikes(),
-                NzbDrone.Core.Download.Clients.QBittorrent.QBittorrentErrorPolicy.ErrorStateAsFailed() ? "on" : "off");
+                ImportProbePool.GetTimeoutStrikes());
         }
 
         private void EnsureInitialized()

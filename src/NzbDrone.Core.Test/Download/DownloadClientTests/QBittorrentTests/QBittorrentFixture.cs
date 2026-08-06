@@ -179,8 +179,10 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
         }
 
         [Test]
-        public void error_item_should_be_failed_and_removable_when_QBIT_ERROR_AS_FAILED_is_set()
+        public void error_item_should_be_failed_and_removable_when_ErrorReportedAsFailed_is_set()
         {
+            Subject.Definition.Settings.As<QBittorrentSettings>().ErrorReportedAsFailed = true;
+
             var torrent = new QBittorrentTorrent
             {
                 Hash = "HASH",
@@ -194,21 +196,10 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             };
             GivenTorrents(new List<QBittorrentTorrent> { torrent });
 
-            var previous = Environment.GetEnvironmentVariable("QBIT_ERROR_AS_FAILED");
+            var item = Subject.GetItems().Single();
 
-            try
-            {
-                Environment.SetEnvironmentVariable("QBIT_ERROR_AS_FAILED", "1");
-
-                var item = Subject.GetItems().Single();
-
-                VerifyFailed(item);
-                item.CanBeRemoved.Should().BeTrue("a parked-failed error torrent must be removable so RemoveFailedDownloads can reap the dead row");
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable("QBIT_ERROR_AS_FAILED", previous);
-            }
+            VerifyFailed(item);
+            item.CanBeRemoved.Should().BeTrue("a parked-failed error torrent must be removable so RemoveFailedDownloads can reap the dead row");
         }
 
         [TestCase("pausedDL")]

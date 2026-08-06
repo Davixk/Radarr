@@ -247,12 +247,12 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                 switch (torrent.State)
                 {
                     case "error": // some error occurred, applies to paused torrents; upstream keeps this a Warning so failed-download handling is NOT triggered
-                        if (QBittorrentErrorPolicy.ErrorStateAsFailed())
+                        if (Settings.ErrorReportedAsFailed)
                         {
-                            // fork9 (QBIT_ERROR_AS_FAILED): decypharr's shim uses 'error' as a terminal "parked-failed" marker.
-                            // Map it to Failed so the arr self-heals (blocklist + re-search). Force CanBeRemoved on because an
-                            // error torrent is never pausedUP/stoppedUP, so the guard above left it false, which would otherwise
-                            // stop RemoveFailedDownloads from reaping the dead row.
+                            // fork10 (per-client "Report Errored Torrents as Failed"): a shim such as decypharr uses 'error' as a
+                            // terminal "parked-failed" marker. Map it to Failed so the arr self-heals (blocklist + re-search). Force
+                            // CanBeRemoved on because an error torrent is never pausedUP/stoppedUP, so the guard above left it false,
+                            // which would otherwise stop RemoveFailedDownloads from reaping the dead row.
                             item.Status = DownloadItemStatus.Failed;
                             item.CanBeRemoved = true;
                         }
