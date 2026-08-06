@@ -284,6 +284,20 @@ namespace NzbDrone.Core.Download
 
             if (allMoviesImportedInHistory)
             {
+                // fork12: history says this movie was imported, but if it currently has NO file on disk (e.g. deleted
+                // by a MissingFromDisk wave after the original import), the "already imported" claim is stale. Marking
+                // this fresh grab Imported here removes it WITHOUT importing, silently eating a re-grab of a release
+                // whose file is gone. Leave it unmarked so the normal import pipeline processes it (its
+                // AlreadyImportedSpecification correctly skips the already-imported check for a movie without a file).
+                // A genuine duplicate is unaffected: it still has its file.
+                var currentMovie = _movieService.GetMovie(trackedDownload.RemoteMovie.Movie.Id);
+
+                if (!currentMovie.HasFile)
+                {
+                    _logger.Debug("History reports '{0}' already imported, but the movie has no file on disk now; letting the import pipeline process the fresh grab instead of removing it", trackedDownload.DownloadItem.Title);
+                    return false;
+                }
+
                 // Log different error messages depending on the circumstances, but treat both as fully imported, because that's the reality.
                 // The second message shouldn't be logged in most cases, but continued reporting would indicate an ongoing issue.
                 if (atLeastOneMovieImported)

@@ -233,6 +233,38 @@ namespace NzbDrone.Core.Test.Download
                   .Verify(s => s.RevalidateApprovedDecisions(It.IsAny<List<ImportDecision>>(), It.IsAny<DownloadClientItem>()), Times.Once());
         }
 
+        [Test]
+        public void should_not_mark_as_imported_from_history_when_the_movie_no_longer_has_a_file()
+        {
+            _trackedDownload.RemoteMovie.Movie = new Movie { Id = 1 };
+
+            // Nothing imported this pass, matching the live bug: a fresh grab of a release whose previously-imported
+            // file was since deleted must NOT be marked imported+removed purely from history.
+            GivenImportResults(new List<ImportResult>
+                           {
+                               new ImportResult(new ImportDecision(new LocalMovie { Path = @"C:\TestPath\Droned.1998.mkv" }), "Test Failure")
+                           });
+
+            var history = Builder<MovieHistory>.CreateListOfSize(2).BuildList();
+
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(history);
+
+            Mocker.GetMock<ITrackedDownloadAlreadyImported>()
+                  .Setup(s => s.IsImported(It.IsAny<TrackedDownload>(), It.IsAny<List<MovieHistory>>()))
+                  .Returns(true);
+
+            // The historically-imported movie currently has NO file on disk (deleted since the original import).
+            Mocker.GetMock<IMovieService>()
+                  .Setup(s => s.GetMovie(It.IsAny<int>()))
+                  .Returns(new Movie { Id = 1, MovieFileId = 0 });
+
+            Subject.Import(_trackedDownload);
+
+            AssertNotImported();
+        }
+
         private void AssertNotImported()
         {
             Mocker.GetMock<IEventAggregator>()
