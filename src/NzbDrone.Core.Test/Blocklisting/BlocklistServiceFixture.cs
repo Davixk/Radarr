@@ -3,6 +3,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Blocklisting;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Test.Framework;
 
@@ -51,6 +52,20 @@ namespace NzbDrone.Core.Test.Blocklisting
 
             Mocker.GetMock<IBlocklistRepository>()
                 .Verify(v => v.Insert(It.Is<Blocklist>(b => b.MovieId == _event.MovieId)), Times.Once());
+        }
+
+        [Test]
+        public void should_not_blocklist_when_download_item_skips_blocklist_on_failure()
+        {
+            _event.TrackedDownload = new TrackedDownload
+            {
+                DownloadItem = new DownloadClientItem { SkipBlocklistOnFailure = true }
+            };
+
+            Subject.Handle(_event);
+
+            Mocker.GetMock<IBlocklistRepository>()
+                .Verify(v => v.Insert(It.IsAny<Blocklist>()), Times.Never());
         }
     }
 }

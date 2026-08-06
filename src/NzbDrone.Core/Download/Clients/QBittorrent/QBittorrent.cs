@@ -255,6 +255,11 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                             // which would otherwise stop RemoveFailedDownloads from reaping the dead row.
                             item.Status = DownloadItemStatus.Failed;
                             item.CanBeRemoved = true;
+
+                            // fork11 (per-client "Blocklist on Errored-as-Failed", default on): when the operator turns it
+                            // off, signal the failed-download path to skip blocklisting THIS failure (BlocklistService honours
+                            // the flag), so the release still fails + re-searches but is not blocklisted.
+                            item.SkipBlocklistOnFailure = !Settings.BlocklistOnErroredAsFailed;
                         }
                         else
                         {

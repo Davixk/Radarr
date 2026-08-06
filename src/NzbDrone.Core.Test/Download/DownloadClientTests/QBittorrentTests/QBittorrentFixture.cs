@@ -200,6 +200,32 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
             VerifyFailed(item);
             item.CanBeRemoved.Should().BeTrue("a parked-failed error torrent must be removable so RemoveFailedDownloads can reap the dead row");
+            item.SkipBlocklistOnFailure.Should().BeFalse("Blocklist on Errored-as-Failed defaults on, so an errored-as-failed download still blocklists");
+        }
+
+        [Test]
+        public void error_item_should_skip_blocklist_when_BlocklistOnErroredAsFailed_is_off()
+        {
+            Subject.Definition.Settings.As<QBittorrentSettings>().ErrorReportedAsFailed = true;
+            Subject.Definition.Settings.As<QBittorrentSettings>().BlocklistOnErroredAsFailed = false;
+
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = _title,
+                Size = 1000,
+                Progress = 0.7,
+                Eta = 8640000,
+                State = "error",
+                Label = "",
+                SavePath = ""
+            };
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+
+            var item = Subject.GetItems().Single();
+
+            VerifyFailed(item);
+            item.SkipBlocklistOnFailure.Should().BeTrue("with Blocklist on Errored-as-Failed off, the errored-as-failed download must not be blocklisted");
         }
 
         [TestCase("pausedDL")]

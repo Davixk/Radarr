@@ -179,6 +179,14 @@ namespace NzbDrone.Core.Blocklisting
 
         public void Handle(DownloadFailedEvent message)
         {
+            // fork11: honour the per-client "Blocklist on Errored-as-Failed" setting. The qBittorrent client sets this
+            // flag on the item when it maps an 'error' torrent to Failed and that setting is off, so the download still
+            // fails + re-searches but is not blocklisted. Every other failure blocklists as normal.
+            if (message.TrackedDownload?.DownloadItem?.SkipBlocklistOnFailure == true)
+            {
+                return;
+            }
+
             var blocklist = new Blocklist
             {
                 MovieId = message.MovieId,

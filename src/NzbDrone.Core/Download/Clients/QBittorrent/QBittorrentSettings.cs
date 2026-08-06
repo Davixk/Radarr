@@ -34,6 +34,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             Host = "localhost";
             Port = 8080;
             MovieCategory = "radarr";
+            BlocklistOnErroredAsFailed = true;
         }
 
         [FieldDefinition(0, Label = "Host", Type = FieldType.Textbox)]
@@ -89,6 +90,13 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         // shows correctly with no en.json shipped. Default false preserves upstream behaviour (error -> Warning).
         [FieldDefinition(15, Label = "Report Errored Torrents as Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "When qBittorrent reports a torrent in the error state, treat it as a failed download so it is blocklisted and re-searched instead of only flagging a warning. The torrent is also removed from the client when Remove is enabled for failed downloads. Off by default; intended for a qBittorrent-compatible client (such as a debrid shim) where 'error' means a terminal failure.")]
         public bool ErrorReportedAsFailed { get; set; }
+
+        // fork11: only meaningful when ErrorReportedAsFailed is on. Default true keeps stock behaviour (a failed
+        // download is blocklisted). A missing field in existing clients' settings JSON keeps this ctor default
+        // (STJson leaves absent properties at their constructor value), so upgrades stay ON. Literal Label/HelpText
+        // for the same overlay reason as ErrorReportedAsFailed (en.json is not shipped).
+        [FieldDefinition(16, Label = "Blocklist on Errored-as-Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "Only applies when 'Report Errored Torrents as Failed' is on. On by default: an errored-as-failed torrent's release is added to the blocklist (stock failed-download behaviour) so it is not grabbed again. Turn off to fail and re-search without blocklisting.")]
+        public bool BlocklistOnErroredAsFailed { get; set; }
 
         public override NzbDroneValidationResult Validate()
         {

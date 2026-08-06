@@ -26,6 +26,11 @@ namespace NzbDrone.Core.Download
         public bool CanBeRemoved { get; set; }
         public bool Removed { get; set; }
 
+        // fork11: set by the qBittorrent client when it maps an 'error' torrent to Failed (error-as-failed) AND the
+        // per-client "Blocklist on Errored-as-Failed" setting is off. BlocklistService.Handle honours it to skip
+        // blocklisting that specific failure. Default false = blocklist as normal.
+        public bool SkipBlocklistOnFailure { get; set; }
+
         public DownloadClientItem Clone()
         {
             return MemberwiseClone() as DownloadClientItem;
