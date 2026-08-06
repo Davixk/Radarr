@@ -178,6 +178,39 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             VerifyWarning(item);
         }
 
+        [Test]
+        public void error_item_should_be_failed_and_removable_when_QBIT_ERROR_AS_FAILED_is_set()
+        {
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = _title,
+                Size = 1000,
+                Progress = 0.7,
+                Eta = 8640000,
+                State = "error",
+                Label = "",
+                SavePath = ""
+            };
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+
+            var previous = Environment.GetEnvironmentVariable("QBIT_ERROR_AS_FAILED");
+
+            try
+            {
+                Environment.SetEnvironmentVariable("QBIT_ERROR_AS_FAILED", "1");
+
+                var item = Subject.GetItems().Single();
+
+                VerifyFailed(item);
+                item.CanBeRemoved.Should().BeTrue("a parked-failed error torrent must be removable so RemoveFailedDownloads can reap the dead row");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("QBIT_ERROR_AS_FAILED", previous);
+            }
+        }
+
         [TestCase("pausedDL")]
         [TestCase("stoppedDL")]
         public void paused_item_should_have_required_properties(string state)
