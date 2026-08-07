@@ -88,14 +88,14 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         // *.Core/*.Common/*.Api.V3 DLLs, NOT Localization/Core/en.json (loaded from disk), so a key would render
         // as the raw key string; GetLocalizedString falls back to returning the phrase verbatim, so a literal
         // shows correctly with no en.json shipped. Default false preserves upstream behaviour (error -> Warning).
-        [FieldDefinition(15, Label = "Report Errored Torrents as Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "When qBittorrent reports a torrent in the error state, treat it as a failed download so it is blocklisted and re-searched instead of only flagging a warning. The torrent is also removed from the client when Remove is enabled for failed downloads. Off by default; intended for a qBittorrent-compatible client (such as a debrid shim) where 'error' means a terminal failure.")]
+        [FieldDefinition(15, Label = "Report Errored Torrents as Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "When qBittorrent reports a torrent in the error state, treat it as a failed download instead of only flagging a warning, so it goes through the normal failed download handling. Off by default; intended for a qBittorrent-compatible client (such as a debrid shim) where 'error' means a terminal failure.")]
         public bool ErrorReportedAsFailed { get; set; }
 
         // fork11: only meaningful when ErrorReportedAsFailed is on. Default true keeps stock behaviour (a failed
         // download is blocklisted). A missing field in existing clients' settings JSON keeps this ctor default
         // (STJson leaves absent properties at their constructor value), so upgrades stay ON. Literal Label/HelpText
         // for the same overlay reason as ErrorReportedAsFailed (en.json is not shipped).
-        [FieldDefinition(16, Label = "Blocklist on Errored-as-Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "Only applies when 'Report Errored Torrents as Failed' is on. On by default: an errored-as-failed torrent's release is added to the blocklist (stock failed-download behaviour) so it is not grabbed again. Turn off to fail and re-search without blocklisting.")]
+        [FieldDefinition(16, Label = "Blocklist on Errored-as-Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "Only applies when 'Report Errored Torrents as Failed' is on. On by default: an errored-as-failed torrent is blocklisted like any other failed download. Turn off to skip blocklisting for errored-as-failed torrents.")]
         public bool BlocklistOnErroredAsFailed { get; set; }
 
         public override NzbDroneValidationResult Validate()
