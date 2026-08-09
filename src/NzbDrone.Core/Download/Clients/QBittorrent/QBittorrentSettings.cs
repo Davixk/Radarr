@@ -35,6 +35,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             Port = 8080;
             MovieCategory = "radarr";
             BlocklistOnErroredAsFailed = true;
+            DeleteDataOnCompletedRemoval = true;
         }
 
         [FieldDefinition(0, Label = "Host", Type = FieldType.Textbox)]
@@ -97,6 +98,15 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         // for the same overlay reason as ErrorReportedAsFailed (en.json is not shipped).
         [FieldDefinition(16, Label = "Blocklist on Errored-as-Failed", Type = FieldType.Checkbox, Advanced = true, HelpText = "Only applies when 'Report Errored Torrents as Failed' is on. On by default: an errored-as-failed torrent is blocklisted like any other failed download. Turn off to skip blocklisting for errored-as-failed torrents.")]
         public bool BlocklistOnErroredAsFailed { get; set; }
+
+        // fork15: default true = stock (removing a completed/imported download deletes its data, qbit deleteFiles=true).
+        // Untick to send deleteFiles=false on COMPLETED-download removals - for a qBittorrent-compatible client (a debrid
+        // shim) where the "data" is a shared provider copy the library symlinks point at, so stock deletion kills the
+        // file and drives a re-grab loop. FAILED-download removals still send deleteFiles=true (releasing a dead provider
+        // copy is desired). Default true survives upgrades for existing clients (STJson keeps the ctor value for absent
+        // fields; see fork11). Literal Label/HelpText for the overlay reason (en.json is not shipped).
+        [FieldDefinition(17, Label = "Delete data when removing completed downloads", Type = FieldType.Checkbox, Advanced = true, HelpText = "On by default (stock): when a completed or imported download is removed from the client, its data is deleted too (qBittorrent deleteFiles=true). Turn off to remove the entry but keep the data - intended for a qBittorrent-compatible client (such as a debrid shim) where the data is a shared provider copy the library links to. Failed-download removals always delete data regardless of this setting.")]
+        public bool DeleteDataOnCompletedRemoval { get; set; }
 
         public override NzbDroneValidationResult Validate()
         {

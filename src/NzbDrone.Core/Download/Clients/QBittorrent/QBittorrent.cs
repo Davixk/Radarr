@@ -234,7 +234,8 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                     DownloadClientInfo = DownloadClientItemClientInfo.FromDownloadClient(this, Settings.MovieImportedCategory.IsNotNullOrWhiteSpace()),
                     RemainingSize = (long)(torrent.Size * (1.0 - torrent.Progress)),
                     RemainingTime = GetRemainingTime(torrent),
-                    SeedRatio = torrent.Ratio
+                    SeedRatio = torrent.Ratio,
+                    DeleteDataOnCompletedRemoval = Settings.DeleteDataOnCompletedRemoval
                 };
 
                 // Avoid removing torrents that haven't reached the global max ratio.

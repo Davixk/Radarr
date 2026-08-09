@@ -31,6 +31,11 @@ namespace NzbDrone.Core.Download
         // blocklisting that specific failure. Default false = blocklist as normal.
         public bool SkipBlocklistOnFailure { get; set; }
 
+        // fork15: set by the qBittorrent client from its "Delete data when removing completed downloads" setting.
+        // DownloadEventHub passes this as deleteData when removing a COMPLETED/imported download (failed removals
+        // always pass true). Field-initialized true so every other download client keeps the stock deleteData=true.
+        public bool DeleteDataOnCompletedRemoval { get; set; } = true;
+
         public DownloadClientItem Clone()
         {
             return MemberwiseClone() as DownloadClientItem;

@@ -42,7 +42,7 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
-            RemoveFromDownloadClient(trackedDownload, downloadClient);
+            RemoveFromDownloadClient(trackedDownload, downloadClient, true);
         }
 
         public void Handle(DownloadCompletedEvent message)
@@ -65,7 +65,7 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
-            RemoveFromDownloadClient(message.TrackedDownload, downloadClient);
+            RemoveFromDownloadClient(message.TrackedDownload, downloadClient, message.TrackedDownload.DownloadItem.DeleteDataOnCompletedRemoval);
         }
 
         public void Handle(DownloadCanBeRemovedEvent message)
@@ -81,15 +81,15 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
-            RemoveFromDownloadClient(message.TrackedDownload, downloadClient);
+            RemoveFromDownloadClient(message.TrackedDownload, downloadClient, message.TrackedDownload.DownloadItem.DeleteDataOnCompletedRemoval);
         }
 
-        private void RemoveFromDownloadClient(TrackedDownload trackedDownload, IDownloadClient downloadClient)
+        private void RemoveFromDownloadClient(TrackedDownload trackedDownload, IDownloadClient downloadClient, bool deleteData)
         {
             try
             {
-                _logger.Debug("[{0}] Removing download from {1} history", trackedDownload.DownloadItem.Title, trackedDownload.DownloadItem.DownloadClientInfo.Name);
-                downloadClient.RemoveItem(trackedDownload.DownloadItem, true);
+                _logger.Debug("[{0}] Removing download from {1} history (deleteData={2})", trackedDownload.DownloadItem.Title, trackedDownload.DownloadItem.DownloadClientInfo.Name, deleteData);
+                downloadClient.RemoveItem(trackedDownload.DownloadItem, deleteData);
                 trackedDownload.DownloadItem.Removed = true;
             }
             catch (NotSupportedException)
