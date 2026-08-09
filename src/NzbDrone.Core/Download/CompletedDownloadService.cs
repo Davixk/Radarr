@@ -100,7 +100,22 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
-            var movie = _parsingService.GetMovie(trackedDownload.DownloadItem.Title);
+            Movie movie = null;
+
+            try
+            {
+                movie = _parsingService.GetMovie(trackedDownload.DownloadItem.Title);
+            }
+            catch (MultipleMoviesFoundException)
+            {
+                // fork16 (option b, operator ruling): the download's title matches MULTIPLE library movies and no layer
+                // can verify which film the content actually is (e.g. Dracula 1931 tt0021814 vs tt0021815). Do NOT
+                // auto-resolve via grab history - that would import an assumption. Block VISIBLY for manual import.
+                trackedDownload.Warn("Ambiguous title - multiple library matches; manual import required");
+                SetStateToImportBlocked(trackedDownload);
+
+                return;
+            }
 
             if (movie == null)
             {
