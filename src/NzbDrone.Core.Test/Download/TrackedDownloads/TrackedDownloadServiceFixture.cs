@@ -4,6 +4,7 @@ using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Indexers;
@@ -84,6 +85,79 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             trackedDownload.RemoteMovie.Should().NotBeNull();
             trackedDownload.RemoteMovie.Movie.Should().NotBeNull();
             trackedDownload.RemoteMovie.Movie.Id.Should().Be(3);
+        }
+
+        private DownloadClientItem GivenCompletedItem(string downloadId)
+        {
+            return new DownloadClientItem
+            {
+                Title = "A Movie 1998",
+                DownloadId = downloadId,
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Id = 1,
+                    Type = "Blackhole",
+                    Name = "Blackhole Client",
+                    Protocol = DownloadProtocol.Torrent
+                }
+            };
+        }
+
+        private void GivenDownloadHistoryImported()
+        {
+            Mocker.GetMock<IDownloadHistoryService>()
+                  .Setup(s => s.GetLatestDownloadHistoryItem(It.IsAny<string>()))
+                  .Returns(new DownloadHistory { EventType = DownloadHistoryEventType.DownloadImported });
+        }
+
+        [Test]
+        public void should_not_mark_imported_from_history_when_the_movie_has_no_file()
+        {
+            // fork13 second-eat site: download history says imported, but the movie has no file now (deleted since).
+            // Must NOT be left in the Imported state (which DownloadProcessingService would silently remove).
+            var remoteMovie = new RemoteMovie
+            {
+                Movie = new Movie { Id = 3, MovieFileId = 0 },
+                ParsedMovieInfo = new ParsedMovieInfo { MovieTitles = new List<string> { "A Movie" }, Year = 1998 }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedMovieInfo>(), It.IsAny<string>(), It.IsAny<int>(), null))
+                  .Returns(remoteMovie);
+
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(new List<MovieHistory>());
+
+            GivenDownloadHistoryImported();
+
+            var trackedDownload = Subject.TrackDownload(new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent }, GivenCompletedItem("12345"));
+
+            trackedDownload.State.Should().Be(TrackedDownloadState.Downloading);
+        }
+
+        [Test]
+        public void should_mark_imported_from_history_when_the_movie_still_has_a_file()
+        {
+            var remoteMovie = new RemoteMovie
+            {
+                Movie = new Movie { Id = 3, MovieFileId = 11 },
+                ParsedMovieInfo = new ParsedMovieInfo { MovieTitles = new List<string> { "A Movie" }, Year = 1998 }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedMovieInfo>(), It.IsAny<string>(), It.IsAny<int>(), null))
+                  .Returns(remoteMovie);
+
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(new List<MovieHistory>());
+
+            GivenDownloadHistoryImported();
+
+            var trackedDownload = Subject.TrackDownload(new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent }, GivenCompletedItem("12345"));
+
+            trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
         }
 
         [Test]

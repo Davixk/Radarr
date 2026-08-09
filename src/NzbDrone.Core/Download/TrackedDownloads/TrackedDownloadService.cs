@@ -129,7 +129,18 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                 if (parsedMovieInfo != null)
                 {
-                    trackedDownload.RemoteMovie = _parsingService.Map(parsedMovieInfo, "", 0, null);
+                    try
+                    {
+                        trackedDownload.RemoteMovie = _parsingService.Map(parsedMovieInfo, "", 0, null);
+                    }
+                    catch (MultipleMoviesFoundException e)
+                    {
+                        // fork13: an ambiguous title (e.g. Dracula (1931) tt0021814 vs Dracula (1931) tt0021815)
+                        // makes the title-based Map throw. Previously it bubbled to the outer catch, left RemoteMovie
+                        // null, and the download stuck - re-erroring every poll (~17MB/9h flood across 8 stuck items).
+                        // Swallow it here so the grabbed-history movieId fallback below resolves it deterministically.
+                        _logger.Debug(e, "Ambiguous title for '{0}', resolving via grabbed-history movieId instead", downloadItem.Title);
+                    }
                 }
 
                 var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
@@ -202,6 +213,21 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             {
                 _logger.Debug(e, "Failed to find movie for " + downloadItem.Title);
                 return null;
+            }
+
+            // fork13: SECOND silent-eat site (fork12 only fixed CompletedDownloadService.VerifyImport). A re-grab
+            // that reuses a downloadId whose latest download-history event is DownloadImported gets State=Imported
+            // above from history alone, with no file-state check - and DownloadProcessingService then removes it
+            // (DownloadCanBeRemovedEvent -> RemoveItem) WITHOUT importing. If the movie it "imported" no longer has
+            // a file (deleted since the original import), that mark is stale, so downgrade to Downloading and let
+            // the completed-download pipeline (file-state-aware since fork12) process the fresh grab instead of
+            // silently removing it. A genuine already-imported download still has its file and is untouched.
+            if (trackedDownload.State == TrackedDownloadState.Imported &&
+                trackedDownload.RemoteMovie?.Movie != null &&
+                !trackedDownload.RemoteMovie.Movie.HasFile)
+            {
+                _logger.Debug("Download '{0}' is marked imported in history, but its movie has no file on disk now; treating it as not-imported so the fresh grab is processed instead of removed", downloadItem.Title);
+                trackedDownload.State = TrackedDownloadState.Downloading;
             }
 
             LogItemChange(trackedDownload, existingItem?.DownloadItem, trackedDownload.DownloadItem);
