@@ -100,7 +100,20 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
-            var movie = _parsingService.GetMovie(trackedDownload.DownloadItem.Title);
+            Movie movie = null;
+
+            try
+            {
+                movie = _parsingService.GetMovie(trackedDownload.DownloadItem.Title);
+            }
+            catch (MultipleMoviesFoundException)
+            {
+                // fork14: an ambiguous title (Dracula 1931 tt0021814 vs tt0021815) makes the title-based GetMovie
+                // throw HERE, aborting Check before it sets ImportPending - so the download sat at completed/Downloading
+                // forever, no import, no error (fork13 fixed the TrackDownload throw, but Check has its OWN title-parse).
+                // Leave movie null so the grabbed-history movieId fallback below resolves it, exactly like the null path.
+                // The actual import already keys off trackedDownload.RemoteMovie.Movie, not this local variable.
+            }
 
             if (movie == null)
             {

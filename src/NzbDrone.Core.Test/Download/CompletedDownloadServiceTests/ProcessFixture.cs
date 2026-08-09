@@ -178,6 +178,32 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
             AssertNotReadyToImport();
         }
 
+        [Test]
+        public void should_resolve_via_grab_history_when_title_is_ambiguous()
+        {
+            // fork14: an ambiguous title makes GetMovie(title) throw MultipleMoviesFoundException inside Check, which
+            // aborted Check before ImportPending and left the download stuck at Downloading with no import and no
+            // error. Check must resolve via the grabbed-history movieId and reach ImportPending instead.
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.GetMovie(It.IsAny<string>()))
+                  .Throws(new MultipleMoviesFoundException(new List<Movie>(), "Expected one movie, but found 2"));
+
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(_trackedDownload.DownloadItem.DownloadId))
+                  .Returns(new List<MovieHistory>
+                           {
+                               new MovieHistory { MovieId = 1, EventType = MovieHistoryEventType.Grabbed }
+                           });
+
+            Mocker.GetMock<IMovieService>()
+                  .Setup(s => s.GetMovie(It.IsAny<int>()))
+                  .Returns(_trackedDownload.RemoteMovie.Movie);
+
+            Subject.Check(_trackedDownload);
+
+            AssertReadyToImport();
+        }
+
         private void AssertNotReadyToImport()
         {
             _trackedDownload.State.Should().NotBe(TrackedDownloadState.ImportPending);
