@@ -137,13 +137,24 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private bool DownloadIsTrackable(TrackedDownload trackedDownload)
         {
-            // If the download has already been imported, failed or the user ignored it don't track it
+            // If the download has already been imported or the user ignored it don't track it
             if (trackedDownload.State == TrackedDownloadState.Imported ||
-                trackedDownload.State == TrackedDownloadState.Failed ||
                 trackedDownload.State == TrackedDownloadState.Ignored)
             {
                 return false;
             }
+
+            // fork17: State==Failed is deliberately NOT excluded here. Stock drops Failed from tracking, which
+            // hides it from the queue (QueueService filters on IsTrackable). Stock gets away with it because
+            // errored torrents map to Warning (State stays Downloading/ImportBlocked = visible) and a genuine
+            // Failed is removed from the client almost instantly, so the invisible window is a blink. With the
+            // per-client "Report Errored Torrents as Failed" knob a large pile can sit in State=Failed awaiting a
+            // starved removal slot - invisible in the queue the entire time (the regression: ~800 failed rows,
+            // ?status=failed -> 0). Keeping Failed trackable while it is STILL served by the client restores stock
+            // visibility (failed shows red until processed); it drops from the queue the instant the client stops
+            // serving it (UpdateTrackable's ExceptBy). Inert in every processing path: the probe loop skips
+            // non-ImportPending, the commit loop only touches ImportPending/FailedPending, RemoveCompletedDownloads
+            // only touches Imported.
 
             // If CDH is disabled and the download status is complete don't track it
             if (!_configService.EnableCompletedDownloadHandling && trackedDownload.DownloadItem.Status == DownloadItemStatus.Completed)
