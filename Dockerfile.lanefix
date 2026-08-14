@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1
-# Overlay image for the command-queue-lane fix (fork17).
+# Overlay image for the command-queue-lane fix (fork18).
 # Builds Radarr.Common.dll + Radarr.Core.dll + Radarr.Api.V3.dll from source with the base
 # image's AssemblyVersion so they bind against the untouched sibling assemblies, then drops
 # those three DLLs onto the pinned home-operations base image. Common is included because fork4
 # adds DiskProviderBase.GetFileSizeStrict (in *.Common) which Core now calls, so the stock base
 # Common would MissingMethodException without it.
+# fork18 also rebuilds the web UI (the Command Timeout knob lives in Settings > General > Task
+# Handling). The base serves its UI from /app/bin/UI (verified), so the rebuilt UI lands there.
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 # Must match the base image's app version so the rebuilt assemblies bind against
@@ -23,6 +25,17 @@ RUN dotnet build src/Radarr.Api.V3/Radarr.Api.V3.csproj \
   && cp /src/_output/net8.0/Radarr.Common.dll /src/_output/net8.0/Radarr.Core.dll /src/_output/net8.0/Radarr.Api.V3.dll /overlay/ \
   && ls -la /overlay
 
+# fork18: rebuild the web UI so the Command Timeout field renders (the DLL-only overlay cannot add
+# a settings input otherwise). Node/yarn pinned to the repo's volta versions; output is /src/_output/UI.
+FROM node:20.11.1 AS uibuild
+WORKDIR /src
+COPY . .
+RUN yarn install --frozen-lockfile --network-timeout 600000 \
+  && yarn build \
+  && echo "=== built UI ===" \
+  && ls -la /src/_output/UI | head
+
 FROM ghcr.io/home-operations/radarr@sha256:0756fffa75b30219e3dbac8d027a5389f53cbb34ae83fa4b0976c1b0524c8eb1
 LABEL org.opencontainers.image.source="https://github.com/Davixk/Radarr"
 COPY --from=build /overlay/Radarr.Common.dll /overlay/Radarr.Core.dll /overlay/Radarr.Api.V3.dll /app/bin/
+COPY --from=uibuild /src/_output/UI/ /app/bin/UI/

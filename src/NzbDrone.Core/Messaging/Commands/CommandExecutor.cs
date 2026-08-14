@@ -1,7 +1,10 @@
 using System;
+using System.Runtime.ExceptionServices;
 using System.Threading;
+using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common;
+using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Lifecycle;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.ProgressMessaging;
@@ -20,18 +23,21 @@ namespace NzbDrone.Core.Messaging.Commands
         private readonly IServiceFactory _serviceFactory;
         private readonly IManageCommandQueue _commandQueueManager;
         private readonly IEventAggregator _eventAggregator;
+        private readonly IConfigService _configService;
 
         private static CancellationTokenSource _cancellationTokenSource;
 
         public CommandExecutor(IServiceFactory serviceFactory,
                                IManageCommandQueue commandQueueManager,
                                IEventAggregator eventAggregator,
+                               IConfigService configService,
                                Logger logger)
         {
             _logger = logger;
             _serviceFactory = serviceFactory;
             _commandQueueManager = commandQueueManager;
             _eventAggregator = eventAggregator;
+            _configService = configService;
         }
 
         private void ExecuteCommands()
@@ -79,7 +85,7 @@ namespace NzbDrone.Core.Messaging.Commands
                     ProgressMessageContext.CommandModel = commandModel;
                 }
 
-                handler.Execute(command);
+                ExecuteWithTimeout(handler, command, commandModel);
 
                 _commandQueueManager.Complete(commandModel, command.CompletionMessage ?? commandModel.Message);
             }
@@ -111,6 +117,58 @@ namespace NzbDrone.Core.Messaging.Commands
                     _logger.Trace("{0} <- {1} [{2}]", command.GetType().Name, handler.GetType().Name, commandModel.Duration.ToString());
                 }
             }
+        }
+
+        private void ExecuteWithTimeout<TCommand>(IExecute<TCommand> handler, TCommand command, CommandModel commandModel)
+            where TCommand : Command
+        {
+            // fork18: optional command-execution reaper. Stock runs the handler synchronously on the worker
+            // thread with no timeout, so a hung command (a search whose indexer/decypharr call never returns -
+            // the observed 2-day zombie) pins that worker forever, starving the imports and failed-download
+            // processing that share the command queue. When CommandTimeout (minutes, UI-settable) is > 0 the
+            // handler runs on a task and the worker abandons it if it overruns: the command is failed and the
+            // worker is freed. The abandoned handler leaks its thread (a managed thread blocked in native IO
+            // cannot be force-aborted) but the queue recovers. Gated on > 0 so the default is the exact stock
+            // synchronous call. Progress context flows across the task via ProgressMessageContext's AsyncLocal.
+            var timeout = GetCommandTimeout();
+
+            if (timeout == null)
+            {
+                handler.Execute(command);
+                return;
+            }
+
+            var task = Task.Run(() => handler.Execute(command));
+
+            bool completed;
+
+            try
+            {
+                completed = task.Wait(timeout.Value);
+            }
+            catch (AggregateException ex)
+            {
+                // The handler threw within the timeout - surface its own exception exactly as the synchronous
+                // path would have, so the existing catch blocks fail the command normally.
+                ExceptionDispatchInfo.Capture(ex.InnerException ?? ex).Throw();
+                return;
+            }
+
+            if (!completed)
+            {
+                // Observe the eventual fault so an abandoned handler cannot raise an UnobservedTaskException.
+                task.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+
+                throw new CommandFailedException($"Command '{commandModel.Name}' exceeded its {timeout.Value.TotalMinutes:0} minute execution timeout and was abandoned to free the worker");
+            }
+        }
+
+        // Seam so tests can drive a sub-second timeout; production reads CommandTimeout (minutes, 0 = disabled).
+        protected virtual TimeSpan? GetCommandTimeout()
+        {
+            var minutes = _configService.CommandTimeout;
+
+            return minutes > 0 ? TimeSpan.FromMinutes(minutes) : null;
         }
 
         private void BroadcastCommandUpdate(CommandModel command)

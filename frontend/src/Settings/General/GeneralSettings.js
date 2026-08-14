@@ -16,6 +16,7 @@ import HostSettings from './HostSettings';
 import LoggingSettings from './LoggingSettings';
 import ProxySettings from './ProxySettings';
 import SecuritySettings from './SecuritySettings';
+import TaskSettings from './TaskSettings';
 import UpdateSettings from './UpdateSettings';
 
 const requiresRestartKeys = [
@@ -149,6 +150,11 @@ class GeneralSettings extends Component {
                   isResettingApiKey={isResettingApiKey}
                   onInputChange={onInputChange}
                   onConfirmResetApiKey={onConfirmResetApiKey}
+                />
+
+                <TaskSettings
+                  settings={settings}
+                  onInputChange={onInputChange}
                 />
 
                 <ProxySettings

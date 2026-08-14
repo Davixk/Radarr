@@ -162,6 +162,17 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("EnableCompletedDownloadHandling", value); }
         }
 
+        // fork18: command-execution reaper timeout in MINUTES. 0 = disabled (stock behaviour). A hung command
+        // (e.g. a search whose indexer/decypharr call never returns) otherwise pins its worker forever; when
+        // set, CommandExecutor abandons a command that overruns this and frees the worker. UI-settable
+        // (General settings -> HostConfig).
+        public int CommandTimeout
+        {
+            get { return GetValueInt("CommandTimeout", 0); }
+
+            set { SetValue("CommandTimeout", value); }
+        }
+
         public bool PreferIndexerFlags
         {
             get { return GetValueBoolean("PreferIndexerFlags", false); }
