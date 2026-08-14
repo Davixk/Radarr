@@ -103,6 +103,21 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 existingItem.DownloadItem = downloadItem;
                 existingItem.IsTrackable = true;
 
+                // fork19: sticky-Failed re-grab zombie. A download marked Failed (e.g. the errAsFailed path on a
+                // storm) whose SAME-hash copy was later re-grabbed and is now completed+healthy at the client
+                // keeps its terminal Failed verdict forever - Failed is inert in every processing path, so the
+                // importable content sits as "Downloaded" and is never imported, removed, or re-evaluated. When
+                // the client item is now a healthy COMPLETED download the failure is stale: drop back to
+                // Downloading so ProcessClientItem re-runs the completed-import flow (imports if importable, else
+                // normal blocked/failed handling). Guarded on Status==Completed so a CURRENTLY-errored Failed
+                // item (client still reporting the error) is left alone - that is the normal failed drain.
+                if (existingItem.State == TrackedDownloadState.Failed &&
+                    downloadItem.Status == DownloadItemStatus.Completed)
+                {
+                    _logger.Debug("Download '{0}' was Failed but its client item is now completed and healthy; re-evaluating it for import", downloadItem.Title);
+                    existingItem.State = TrackedDownloadState.Downloading;
+                }
+
                 return existingItem;
             }
 

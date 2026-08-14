@@ -161,6 +161,47 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
+        public void should_reevaluate_a_sticky_failed_download_when_the_client_item_is_now_completed()
+        {
+            // fork19 sticky-Failed re-grab zombie: a download stuck at terminal State=Failed whose same-hash
+            // copy was re-grabbed and is now completed+healthy at the client must drop back to Downloading so
+            // the completed-import flow re-evaluates it (instead of sitting as "Downloaded" forever).
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(new List<MovieHistory>());
+
+            var client = new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent };
+
+            Subject.TrackDownload(client, GivenCompletedItem("re-grab-hash"));
+            Subject.GetTrackedDownloads().Single().State = TrackedDownloadState.Failed;
+
+            var completed = GivenCompletedItem("re-grab-hash");
+            completed.Status = DownloadItemStatus.Completed;
+
+            Subject.TrackDownload(client, completed).State.Should().Be(TrackedDownloadState.Downloading);
+        }
+
+        [Test]
+        public void should_leave_a_currently_errored_failed_download_untouched()
+        {
+            // The guard: a Failed download whose client item is STILL reporting the error (errAsFailed ->
+            // Status=Failed) is the normal failed drain and must stay Failed, not be resurrected.
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(new List<MovieHistory>());
+
+            var client = new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent };
+
+            Subject.TrackDownload(client, GivenCompletedItem("still-failing"));
+            Subject.GetTrackedDownloads().Single().State = TrackedDownloadState.Failed;
+
+            var errored = GivenCompletedItem("still-failing");
+            errored.Status = DownloadItemStatus.Failed;
+
+            Subject.TrackDownload(client, errored).State.Should().Be(TrackedDownloadState.Failed);
+        }
+
+        [Test]
         public void should_set_indexer()
         {
             var episodeHistory = new MovieHistory()

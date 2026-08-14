@@ -517,6 +517,17 @@ namespace NzbDrone.Core.Organizer
                 return string.Empty;
             }
 
+            // fork19: bound the language token. A file with dozens of audio dub tracks (~40 seen live)
+            // serialized every language here, blowing the filename component past the filesystem limit and
+            // throwing PathTooLongException DURING import (which then loops as an undead queue row). Keep the
+            // first few and collapse the rest to a MULTI marker so the component stays bounded.
+            const int maxLanguageTokens = 3;
+            if (filteredTokens.Count > maxLanguageTokens)
+            {
+                filteredTokens = filteredTokens.Take(maxLanguageTokens).ToList();
+                filteredTokens.Add("MULTI");
+            }
+
             var response = string.Join("+", filteredTokens);
 
             if (quoted && response.IsNotNullOrWhiteSpace())
