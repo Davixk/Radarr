@@ -112,7 +112,12 @@ namespace NzbDrone.Core.MediaFiles.MovieImport.Manual
                     return new List<ManualImportItem>();
                 }
 
-                path = trackedDownload.ImportItem.OutputPath.FullPath;
+                // fork20: ImportItem is only populated by CompletedDownloadService once a download reaches the
+                // import flow, so a tracked-Failed (or otherwise never-imported) download has a null ImportItem
+                // and dereferencing it here threw NullReferenceException for manual-import-by-downloadId (while
+                // by-folder worked). Fall back to DownloadItem (always set) so the manual import resolves the
+                // download's output path instead of 500-ing.
+                path = (trackedDownload.ImportItem ?? trackedDownload.DownloadItem).OutputPath.FullPath;
             }
 
             if (!_diskProvider.FolderExists(path))

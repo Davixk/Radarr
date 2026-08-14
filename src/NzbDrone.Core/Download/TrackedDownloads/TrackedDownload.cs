@@ -24,6 +24,15 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         // instead of retried into the same unreadable file forever. Reset on any non-timeout probe outcome.
         public int ConsecutiveProbeTimeouts { get; set; }
 
+        // fork20: consecutive passes on which this download reached the import COMMIT and failed to import
+        // (a deterministic throw during the move e.g. PathTooLong, the source folder gone, or nothing
+        // eligible). At MaxImportFailures the download is marked ImportFailedPermanently and left visibly
+        // ImportBlocked for manual action instead of being revived into the same failing import forever.
+        // Kept as ImportBlocked (not Failed) so it never collides with the fork19 Failed+completed
+        // re-evaluation. Both reset when the client re-downloads a fresh copy (Status back to Downloading).
+        public int ConsecutiveImportFailures { get; set; }
+        public bool ImportFailedPermanently { get; set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();

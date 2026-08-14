@@ -86,6 +86,15 @@ namespace NzbDrone.Core.Download
                 return;
             }
 
+            // fork20: a download marked ImportFailedPermanently has failed the import commit MaxImportFailures
+            // times in a row (PathTooLong / source gone / nothing eligible); do NOT revive it into yet another
+            // ImportPending attempt - leave it terminally ImportBlocked for manual action. It clears if the
+            // client re-downloads a fresh copy (reset in TrackDownload).
+            if (trackedDownload.ImportFailedPermanently)
+            {
+                return;
+            }
+
             var grabbedHistories = _historyService.FindByDownloadId(trackedDownload.DownloadItem.DownloadId).Where(h => h.EventType == MovieHistoryEventType.Grabbed).ToList();
             var historyItem = grabbedHistories.MaxBy(h => h.Date);
 
@@ -231,6 +240,24 @@ namespace NzbDrone.Core.Download
             }
 
             trackedDownload.State = TrackedDownloadState.ImportPending;
+
+            // fork20: this pass reached the import commit and did not import. Count consecutive import-commit
+            // failures and, at MaxImportFailures, stop the eternal ImportPending<->ImportBlocked retry (the
+            // undead shapes: PathTooLong during the move, source folder gone, nothing eligible) - mark it
+            // terminal and leave it visibly ImportBlocked for manual action. Small-but-not-1 threshold so a
+            // transient failure that resolves within a few passes is never terminalized.
+            const int maxImportFailures = 3;
+
+            trackedDownload.ConsecutiveImportFailures++;
+
+            if (trackedDownload.ConsecutiveImportFailures >= maxImportFailures)
+            {
+                trackedDownload.Warn("Import failed on {0} consecutive attempts; manual action required", trackedDownload.ConsecutiveImportFailures);
+                trackedDownload.ImportFailedPermanently = true;
+                SetStateToImportBlocked(trackedDownload);
+
+                return;
+            }
 
             if (importResults.Empty())
             {

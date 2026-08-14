@@ -118,6 +118,15 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     existingItem.State = TrackedDownloadState.Downloading;
                 }
 
+                // fork20: a terminally import-failed item whose client is re-downloading a fresh copy gets a
+                // clean slate - clear the strike + terminal flag so the completed-import flow re-evaluates it
+                // when the fresh copy finishes.
+                if (downloadItem.Status == DownloadItemStatus.Downloading)
+                {
+                    existingItem.ConsecutiveImportFailures = 0;
+                    existingItem.ImportFailedPermanently = false;
+                }
+
                 return existingItem;
             }
 

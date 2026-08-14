@@ -39,6 +39,8 @@ namespace NzbDrone.Core.Test.Download
                     .With(c => c.State = TrackedDownloadState.Downloading)
                     .With(c => c.DownloadItem = completed)
                     .With(c => c.RemoteMovie = remoteMovie)
+                    .With(c => c.ConsecutiveImportFailures = 0)
+                    .With(c => c.ImportFailedPermanently = false)
                     .Build();
 
             Mocker.GetMock<IDownloadClient>()
@@ -180,6 +182,40 @@ namespace NzbDrone.Core.Test.Download
             Subject.Import(_trackedDownload);
 
             AssertNotImported();
+        }
+
+        [Test]
+        public void should_terminally_block_after_repeated_import_failures()
+        {
+            // fork20: a download that fails the import commit on MaxImportFailures (3) consecutive passes must
+            // stop retrying forever - it is marked ImportFailedPermanently and left visibly ImportBlocked.
+            GivenImportResults(new List<ImportResult>
+                           {
+                               new ImportResult(new ImportDecision(new LocalMovie { Path = @"C:\TestPath\Droned.1998.mkv" }), "Test Failure")
+                           });
+
+            Subject.Import(_trackedDownload);
+            _trackedDownload.ImportFailedPermanently.Should().BeFalse();
+
+            Subject.Import(_trackedDownload);
+            _trackedDownload.ImportFailedPermanently.Should().BeFalse();
+
+            Subject.Import(_trackedDownload);
+            _trackedDownload.ImportFailedPermanently.Should().BeTrue();
+            _trackedDownload.State.Should().Be(TrackedDownloadState.ImportBlocked);
+        }
+
+        [Test]
+        public void should_not_revive_a_permanently_import_failed_download()
+        {
+            // fork20: once terminal, Check must not flip it back to ImportPending (the eternal-retry loop).
+            _trackedDownload.State = TrackedDownloadState.ImportBlocked;
+            _trackedDownload.ImportFailedPermanently = true;
+            _trackedDownload.DownloadItem.Status = DownloadItemStatus.Completed;
+
+            Subject.Check(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.ImportBlocked);
         }
 
         [Test]
