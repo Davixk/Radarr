@@ -33,6 +33,14 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public int ConsecutiveImportFailures { get; set; }
         public bool ImportFailedPermanently { get; set; }
 
+        // fork21 (A): last time a stuck Failed download was re-routed through the recovery flow (remove +
+        // re-search). A tracked download marked Failed is inert in every processing path, so a client entry
+        // that fails AGAIN (or a decypharr-side failure that lands after the arr already wrote Failed) has no
+        // exit and sits as permanent litter. On re-observation of Failed + client-still-failed it is dropped
+        // back to Downloading to re-run the configured recovery, rate-limited by this timestamp so an entry
+        // that resists removal retries periodically instead of re-firing every refresh (search flood).
+        public DateTime? LastFailedRecoveryAttempt { get; set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();

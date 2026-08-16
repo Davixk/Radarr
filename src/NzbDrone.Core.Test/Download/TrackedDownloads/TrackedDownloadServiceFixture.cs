@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
@@ -182,10 +183,10 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
-        public void should_leave_a_currently_errored_failed_download_untouched()
+        public void should_rerun_recovery_when_a_failed_download_is_still_failed_at_the_client()
         {
-            // The guard: a Failed download whose client item is STILL reporting the error (errAsFailed ->
-            // Status=Failed) is the normal failed drain and must stay Failed, not be resurrected.
+            // fork21 (A): a Failed download whose client is STILL reporting failed must not sit as litter - it
+            // drops back to Downloading so the failed-download pipeline re-runs recovery (remove + re-search).
             Mocker.GetMock<IHistoryService>()
                   .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
                   .Returns(new List<MovieHistory>());
@@ -193,7 +194,31 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             var client = new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent };
 
             Subject.TrackDownload(client, GivenCompletedItem("still-failing"));
-            Subject.GetTrackedDownloads().Single().State = TrackedDownloadState.Failed;
+            var tracked = Subject.GetTrackedDownloads().Single();
+            tracked.State = TrackedDownloadState.Failed;
+            tracked.LastFailedRecoveryAttempt = null;
+
+            var errored = GivenCompletedItem("still-failing");
+            errored.Status = DownloadItemStatus.Failed;
+
+            Subject.TrackDownload(client, errored).State.Should().Be(TrackedDownloadState.Downloading);
+        }
+
+        [Test]
+        public void should_rate_limit_repeated_failed_recovery()
+        {
+            // fork21 (A): a client entry that resists removal must not re-fire recovery every refresh - within
+            // the rate-limit window it stays Failed rather than re-running (no search flood).
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(new List<MovieHistory>());
+
+            var client = new DownloadClientDefinition { Id = 1, Protocol = DownloadProtocol.Torrent };
+
+            Subject.TrackDownload(client, GivenCompletedItem("still-failing"));
+            var tracked = Subject.GetTrackedDownloads().Single();
+            tracked.State = TrackedDownloadState.Failed;
+            tracked.LastFailedRecoveryAttempt = DateTime.UtcNow;
 
             var errored = GivenCompletedItem("still-failing");
             errored.Status = DownloadItemStatus.Failed;

@@ -127,6 +127,21 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     existingItem.ImportFailedPermanently = false;
                 }
 
+                // fork21 (A): a Failed download whose client is STILL/AGAIN reporting failed is permanent litter
+                // - it fired its recovery once (or never) and Failed is inert thereafter. Drop it back to
+                // Downloading so the failed-download pipeline re-runs the configured recovery (remove + re-search
+                // per AutoRedownloadFailed). Rate-limited per item: a client entry that resists removal retries
+                // on the interval below rather than every refresh, so this can never become a search flood.
+                if (existingItem.State == TrackedDownloadState.Failed &&
+                    downloadItem.Status == DownloadItemStatus.Failed &&
+                    (existingItem.LastFailedRecoveryAttempt == null ||
+                     DateTime.UtcNow - existingItem.LastFailedRecoveryAttempt.Value > TimeSpan.FromMinutes(60)))
+                {
+                    _logger.Debug("Download '{0}' is Failed and the client still reports it failed; re-running the recovery flow (remove + re-search)", downloadItem.Title);
+                    existingItem.LastFailedRecoveryAttempt = DateTime.UtcNow;
+                    existingItem.State = TrackedDownloadState.Downloading;
+                }
+
                 return existingItem;
             }
 
