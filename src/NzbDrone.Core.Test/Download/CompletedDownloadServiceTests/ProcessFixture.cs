@@ -3,12 +3,14 @@ using FizzWare.NBuilder;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
+using NzbDrone.Common.Cache;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.MovieImport;
+using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.Movies;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
@@ -196,6 +198,53 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
             Subject.Check(_trackedDownload);
 
             _trackedDownload.State.Should().Be(TrackedDownloadState.ImportBlocked);
+        }
+
+        [Test]
+        public void should_block_when_the_metadata_source_has_multiple_movies_with_the_same_title()
+        {
+            // fork23 #3: no year in the release AND the metadata source knows >1 movie with this bare title
+            // -> cannot safely resolve -> visible ImportBlocked (not a silent wrong-movie import).
+            Mocker.SetConstant<ICacheManager>(Mocker.Resolve<CacheManager>());
+
+            _trackedDownload.DownloadItem.Title = "Drone.German.DL.AC3.Dubbed..BluRay.x264-PsO";
+            _trackedDownload.DownloadItem.Category = "movies";
+            GivenNoGrabbedHistory();
+            GivenMovieMatch();
+
+            Mocker.GetMock<ISearchForNewMovie>()
+                  .Setup(s => s.SearchForNewMovie(It.IsAny<string>()))
+                  .Returns(new List<Movie>
+                           {
+                               new Movie { TmdbId = 111, Title = "Drone" },
+                               new Movie { TmdbId = 222, Title = "Drone" }
+                           });
+
+            Subject.Check(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.ImportBlocked);
+        }
+
+        [Test]
+        public void should_process_when_the_metadata_source_has_a_single_movie_with_the_title()
+        {
+            Mocker.SetConstant<ICacheManager>(Mocker.Resolve<CacheManager>());
+
+            _trackedDownload.DownloadItem.Title = "Drone.German.DL.AC3.Dubbed..BluRay.x264-PsO";
+            _trackedDownload.DownloadItem.Category = "movies";
+            GivenNoGrabbedHistory();
+            GivenMovieMatch();
+
+            Mocker.GetMock<ISearchForNewMovie>()
+                  .Setup(s => s.SearchForNewMovie(It.IsAny<string>()))
+                  .Returns(new List<Movie>
+                           {
+                               new Movie { TmdbId = 111, Title = "Drone" }
+                           });
+
+            Subject.Check(_trackedDownload);
+
+            _trackedDownload.State.Should().Be(TrackedDownloadState.ImportPending);
         }
 
         private void AssertNotReadyToImport()

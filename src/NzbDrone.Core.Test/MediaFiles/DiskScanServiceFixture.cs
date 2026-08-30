@@ -215,6 +215,30 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void Reaper_marks_missing_when_the_symlink_parent_directory_is_gone()
+        {
+            // fork23 #2: storage is healthy and the link is reapable, but the parent directory was removed so
+            // DeleteFile throws DirectoryNotFoundException. The reaper must treat that as already-removed - still
+            // mark the record missing and NOT abort the whole rescan.
+            GivenReaperEnabled(true);
+            var movieFiles = GivenMovieFiles("dead.mkv");
+            GivenSizeReadThrows("dead.mkv", new FileNotFoundException());
+
+            var movieFolder = _movie.Path;
+            var storageAll = Path.GetDirectoryName(movieFolder);
+            GivenAncestorEmpty(movieFolder);
+            GivenAncestorPopulated(storageAll);
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.DeleteFile(PathOf("dead.mkv")))
+                  .Throws(new DirectoryNotFoundException());
+
+            Assert.DoesNotThrow(() => Subject.Scan(_movie));
+
+            Mocker.GetMock<IMediaFileService>().Verify(s => s.Delete(movieFiles[0], DeleteMediaFileReason.MissingFromDisk), Times.Once());
+        }
+
+        [Test]
         public void Reaper_aborts_when_an_ancestor_faults()
         {
             GivenReaperEnabled(true);

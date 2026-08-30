@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using NLog;
+using NzbDrone.Common.Cache;
 using NzbDrone.Common.EnvironmentInfo;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
@@ -11,6 +12,7 @@ using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.MovieImport;
 using NzbDrone.Core.Messaging.Events;
+using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.Movies;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
@@ -46,6 +48,8 @@ namespace NzbDrone.Core.Download
         private readonly IMovieService _movieService;
         private readonly ITrackedDownloadAlreadyImported _trackedDownloadAlreadyImported;
         private readonly IRejectedImportService _rejectedImportService;
+        private readonly ISearchForNewMovie _searchForNewMovie;
+        private readonly ICached<bool> _sourceAmbiguityCache;
         private readonly Logger _logger;
 
         public CompletedDownloadService(IEventAggregator eventAggregator,
@@ -57,6 +61,8 @@ namespace NzbDrone.Core.Download
                                         IMovieService movieService,
                                         ITrackedDownloadAlreadyImported trackedDownloadAlreadyImported,
                                         IRejectedImportService rejectedImportService,
+                                        ISearchForNewMovie searchForNewMovie,
+                                        ICacheManager cacheManager,
                                         Logger logger)
         {
             _eventAggregator = eventAggregator;
@@ -68,6 +74,8 @@ namespace NzbDrone.Core.Download
             _movieService = movieService;
             _trackedDownloadAlreadyImported = trackedDownloadAlreadyImported;
             _rejectedImportService = rejectedImportService;
+            _searchForNewMovie = searchForNewMovie;
+            _sourceAmbiguityCache = cacheManager.GetCache<bool>(GetType(), "sourceAmbiguity");
             _logger = logger;
         }
 
@@ -154,7 +162,66 @@ namespace NzbDrone.Core.Download
                 }
             }
 
+            // fork23 #3 (operator-commissioned): the movie was resolved from the release title, but a year-less
+            // title that matches ONE library movie can still be the wrong film when the metadata SOURCE knows
+            // more than one movie with that bare title. fork16 only catches ambiguity that already exists IN the
+            // library. Here we ask the source: no year in the release AND >1 movie share this bare title at the
+            // metadata provider -> cannot safely resolve -> block for manual action rather than import silently
+            // into the wrong movie.
+            if (IsAmbiguousAtMetadataSource(trackedDownload.DownloadItem.Title))
+            {
+                trackedDownload.Warn("Ambiguous title - the release has no year and more than one movie shares this title at the metadata source; manual import required");
+                SetStateToImportBlocked(trackedDownload);
+
+                return;
+            }
+
             trackedDownload.State = TrackedDownloadState.ImportPending;
+        }
+
+        private bool IsAmbiguousAtMetadataSource(string releaseTitle)
+        {
+            var parsed = Parser.Parser.ParseMovieTitle(releaseTitle);
+
+            // Only the year-less shape is ambiguous; a release that states its year disambiguates itself.
+            if (parsed == null || parsed.Year > 0)
+            {
+                return false;
+            }
+
+            var bareTitle = parsed.PrimaryMovieTitle;
+
+            if (bareTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var cleanTitle = bareTitle.CleanMovieTitle();
+
+            try
+            {
+                // Cached: source-side ambiguity of a title is stable, and Check re-runs for a blocked item every
+                // refresh, so we must not hit the metadata provider each pass. Gated on the year-less shape above,
+                // so the lookup only fires for the ambiguous minority.
+                return _sourceAmbiguityCache.Get(cleanTitle, () => SourceHasMultipleMoviesNamed(bareTitle, cleanTitle), TimeSpan.FromHours(6));
+            }
+            catch (Exception ex)
+            {
+                // Metadata provider unreachable/errored: degrade to stock behaviour (do not block). The exception
+                // leaves the cache unset, so it is retried next time rather than a failure being cached.
+                _logger.Debug(ex, "Metadata-source ambiguity lookup failed for '{0}'; not blocking", bareTitle);
+
+                return false;
+            }
+        }
+
+        private bool SourceHasMultipleMoviesNamed(string bareTitle, string cleanTitle)
+        {
+            return _searchForNewMovie.SearchForNewMovie(bareTitle)
+                                     .Where(m => m.Title.CleanMovieTitle() == cleanTitle)
+                                     .Select(m => m.TmdbId)
+                                     .Distinct()
+                                     .Count() > 1;
         }
 
         public void Import(TrackedDownload trackedDownload)

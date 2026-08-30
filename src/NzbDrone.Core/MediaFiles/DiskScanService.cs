@@ -174,7 +174,25 @@ namespace NzbDrone.Core.MediaFiles
                     if (_scanReapGuard.ShouldReap(path))
                     {
                         _logger.Warn("Reaping dead symlink and marking missing: {0}", path);
-                        _diskProvider.DeleteFile(path);
+
+                        // fork23 #2: File.Delete no-ops on a missing FILE (why an intact-parent dead symlink
+                        // reaps cleanly) but throws DirectoryNotFoundException when the PARENT directory is gone
+                        // (the whole movie folder was removed). That throw fired here INSIDE this catch, so it
+                        // escaped the loop and aborted the entire RescanMovie, leaving every remaining stale
+                        // record. ShouldReap already confirmed the storage root is healthy, so a missing parent
+                        // (or missing file) means the inode is already unlinked - the desired end state - and
+                        // must be treated as done: swallow ENOENT and still mark the record missing. A real
+                        // IOException (mount fault) is not caught here and still surfaces (aborts), so the
+                        // mount-fault-aborts contract holds.
+                        try
+                        {
+                            _diskProvider.DeleteFile(path);
+                        }
+                        catch (Exception deleteEx) when (deleteEx is FileNotFoundException || deleteEx is DirectoryNotFoundException)
+                        {
+                            _logger.Debug("Symlink or its parent directory already gone, treating as already removed: {0}", path);
+                        }
+
                         _mediaFileService.Delete(file, DeleteMediaFileReason.MissingFromDisk);
                     }
                     else
