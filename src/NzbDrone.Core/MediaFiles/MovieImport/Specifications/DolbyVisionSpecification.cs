@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NLog;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.MediaFiles.MediaInfo;
 using NzbDrone.Core.Parser.Model;
 
 namespace NzbDrone.Core.MediaFiles.MovieImport.Specifications
@@ -18,6 +19,14 @@ namespace NzbDrone.Core.MediaFiles.MovieImport.Specifications
     // MediaInfo-based specs (cannot gate what we could not probe / what is not DV).
     public class DolbyVisionSpecification : IImportDecisionEngineSpecification
     {
+        // fork24: stable, machine-greppable prefix token that begins every DV-exclusion rejection (and
+        // therefore every DV blocklist Message). Lets the operator find the whole DV-excluded class with a
+        // plain string match and bulk-un-blocklist it later (e.g. if a compat value turns out fine on a new
+        // client) WITHOUT a schema/audit column. Do NOT change this string once shipped - it is a contract.
+        public const string BlocklistToken = "[DV-EXCLUDED]";
+
+        private const string RejectMessageFormat = BlocklistToken + " Dolby Vision profile {0} (compatibility id {1}) is excluded by configuration; blocklisted for re-search";
+
         private readonly Logger _logger;
 
         public DolbyVisionSpecification(Logger logger)
@@ -27,28 +36,46 @@ namespace NzbDrone.Core.MediaFiles.MovieImport.Specifications
 
         public ImportSpecDecision IsSatisfiedBy(LocalMovie localMovie, DownloadClientItem downloadClientItem)
         {
-            var dovi = localMovie.MediaInfo?.DoviConfigurationRecord;
+            var message = GetExclusionMessage(localMovie.MediaInfo);
 
-            if (dovi == null)
+            if (message == null)
             {
                 return ImportSpecDecision.Accept();
             }
 
-            if (ParseRejectList("DV_REJECT_PROFILES").Contains(dovi.DvProfile))
-            {
-                _logger.Debug("Dolby Vision profile {0} is on the DV_REJECT_PROFILES exclusion list", dovi.DvProfile);
+            _logger.Debug("Rejecting import: {0}", message);
 
-                return ImportSpecDecision.Reject(ImportRejectionReason.DolbyVisionExcluded, "Dolby Vision profile {0} (compatibility id {1}) is excluded by configuration; manual import required", dovi.DvProfile, dovi.DvBlSignalCompatibilityId);
+            return ImportSpecDecision.Reject(ImportRejectionReason.DolbyVisionExcluded, message);
+        }
+
+        // fork24: true when the operator has configured any DV exclusion (either env list non-empty). When
+        // false the whole feature is a pure no-op, so the import-time reliable re-probe (ImportApprovedMovie)
+        // and the scan backstop (UpdateMediaInfoService) skip their extra work entirely and behave as stock.
+        public static bool IsExclusionActive()
+        {
+            return ParseRejectList("DV_REJECT_PROFILES").Count > 0 || ParseRejectList("DV_REJECT_COMPAT_IDS").Count > 0;
+        }
+
+        // fork24: THE single source of truth for "is this file's Dolby Vision excluded". Returns the stable,
+        // token-prefixed, retraceable reason string if the profile OR compat id is on an exclusion list;
+        // null for null MediaInfo, a non-DV file, or a permitted profile. Shared by the import spec, the
+        // import-time reliable re-probe, and the scan backstop so all three enforce and message identically.
+        public static string GetExclusionMessage(MediaInfoModel mediaInfo)
+        {
+            var dovi = mediaInfo?.DoviConfigurationRecord;
+
+            if (dovi == null)
+            {
+                return null;
             }
 
-            if (ParseRejectList("DV_REJECT_COMPAT_IDS").Contains(dovi.DvBlSignalCompatibilityId))
+            if (ParseRejectList("DV_REJECT_PROFILES").Contains(dovi.DvProfile) ||
+                ParseRejectList("DV_REJECT_COMPAT_IDS").Contains(dovi.DvBlSignalCompatibilityId))
             {
-                _logger.Debug("Dolby Vision compatibility id {0} is on the DV_REJECT_COMPAT_IDS exclusion list", dovi.DvBlSignalCompatibilityId);
-
-                return ImportSpecDecision.Reject(ImportRejectionReason.DolbyVisionExcluded, "Dolby Vision profile {0} (compatibility id {1}) is excluded by configuration; manual import required", dovi.DvProfile, dovi.DvBlSignalCompatibilityId);
+                return string.Format(RejectMessageFormat, dovi.DvProfile, dovi.DvBlSignalCompatibilityId);
             }
 
-            return ImportSpecDecision.Accept();
+            return null;
         }
 
         private static HashSet<int> ParseRejectList(string envName)

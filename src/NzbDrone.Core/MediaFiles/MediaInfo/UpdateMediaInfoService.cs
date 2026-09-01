@@ -5,6 +5,7 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.MediaFiles.Events;
+using NzbDrone.Core.MediaFiles.MovieImport.Specifications;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Movies;
 
@@ -21,18 +22,21 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
         private readonly IDiskProvider _diskProvider;
         private readonly IMediaFileService _mediaFileService;
         private readonly IVideoFileInfoReader _videoFileInfoReader;
+        private readonly IDolbyVisionEnforcementService _dvEnforcementService;
         private readonly IConfigService _configService;
         private readonly Logger _logger;
 
         public UpdateMediaInfoService(IDiskProvider diskProvider,
                                 IMediaFileService mediaFileService,
                                 IVideoFileInfoReader videoFileInfoReader,
+                                IDolbyVisionEnforcementService dvEnforcementService,
                                 IConfigService configService,
                                 Logger logger)
         {
             _diskProvider = diskProvider;
             _mediaFileService = mediaFileService;
             _videoFileInfoReader = videoFileInfoReader;
+            _dvEnforcementService = dvEnforcementService;
             _configService = configService;
             _logger = logger;
         }
@@ -53,6 +57,18 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
             foreach (var mediaFile in filteredMediaFiles)
             {
                 UpdateMediaInfo(mediaFile, message.Movie);
+            }
+
+            // fork24 backstop: enforce the DV exclusion on EVERY file after the scan re-probe, independent of
+            // the schema filter above (which permanently skips files already at the current MediaInfo schema -
+            // including one that leaked into the library before this fix). Runs on the freshly-probed local
+            // MediaInfo, the only fully reliable DV read. No-op unless the operator has configured an exclusion.
+            if (DolbyVisionSpecification.IsExclusionActive())
+            {
+                foreach (var mediaFile in _mediaFileService.GetFilesByMovie(message.Movie.Id))
+                {
+                    _dvEnforcementService.EnforceOnLibraryFile(message.Movie, mediaFile);
+                }
             }
         }
 

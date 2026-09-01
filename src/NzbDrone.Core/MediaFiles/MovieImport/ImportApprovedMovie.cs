@@ -10,6 +10,8 @@ using NzbDrone.Core.Extras;
 using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles.Commands;
 using NzbDrone.Core.MediaFiles.Events;
+using NzbDrone.Core.MediaFiles.MediaInfo;
+using NzbDrone.Core.MediaFiles.MovieImport.Specifications;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser.Model;
@@ -30,6 +32,8 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
         private readonly IExistingExtraFiles _existingExtraFiles;
         private readonly IDiskProvider _diskProvider;
         private readonly IHistoryService _historyService;
+        private readonly IVideoFileInfoReader _videoFileInfoReader;
+        private readonly IDeleteMediaFiles _deleteMediaFiles;
         private readonly IEventAggregator _eventAggregator;
         private readonly IManageCommandQueue _commandQueueManager;
         private readonly Logger _logger;
@@ -40,6 +44,8 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
                                    IExistingExtraFiles existingExtraFiles,
                                    IDiskProvider diskProvider,
                                    IHistoryService historyService,
+                                   IVideoFileInfoReader videoFileInfoReader,
+                                   IDeleteMediaFiles deleteMediaFiles,
                                    IEventAggregator eventAggregator,
                                    IManageCommandQueue commandQueueManager,
                                    Logger logger)
@@ -50,6 +56,8 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
             _existingExtraFiles = existingExtraFiles;
             _diskProvider = diskProvider;
             _historyService = historyService;
+            _videoFileInfoReader = videoFileInfoReader;
+            _deleteMediaFiles = deleteMediaFiles;
             _eventAggregator = eventAggregator;
             _commandQueueManager = commandQueueManager;
             _logger = logger;
@@ -168,6 +176,36 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
                         if (!localMovie.ScriptImported || localMovie.ShouldImportExtras)
                         {
                             _extraService.ImportMovie(localMovie, movieFile, copyOnly);
+                        }
+                    }
+
+                    // fork24: for imports from remote/debrid download clients the pre-move probe reads the
+                    // file over the mount, where the Dolby Vision configuration record can be silently absent
+                    // (a valid MediaInfo with no side_data, ffprobe exit 0) - which lets an excluded profile
+                    // slip past DolbyVisionSpecification's null->Accept and import. The file is now local, so
+                    // re-probe it here (the only fully reliable read, proven) BEFORE MovieFileImportedEvent
+                    // notifies Plex/connections. If it is excluded, revert the just-committed import (remove
+                    // file + DB row) and rewrite this decision as a DolbyVisionExcluded rejection, so the live
+                    // download is blocklisted + re-searched through the normal rejected-import path carrying
+                    // the retraceable [DV-EXCLUDED] reason. Scoped to remote clients + active exclusion so a
+                    // local import (already reliably probed) and stock (no exclusion set) do no extra work.
+                    if (newDownload && downloadClientItem is { CanMoveFiles: false } && DolbyVisionSpecification.IsExclusionActive())
+                    {
+                        var reliablePath = Path.Combine(localMovie.Movie.Path, movieFile.RelativePath);
+                        var dvMessage = DolbyVisionSpecification.GetExclusionMessage(_videoFileInfoReader.GetMediaInfo(reliablePath));
+
+                        if (dvMessage != null)
+                        {
+                            _logger.Warn("Imported file for {0} reads as excluded Dolby Vision on a reliable local re-probe; reverting import and blocklisting. {1}", localMovie.Movie, dvMessage);
+
+                            _deleteMediaFiles.DeleteMovieFile(localMovie.Movie, movieFile);
+
+                            importResults.RemoveAll(r => ReferenceEquals(r.ImportDecision, importDecision));
+                            importResults.Add(new ImportResult(
+                                new ImportDecision(localMovie, new ImportRejection(ImportRejectionReason.DolbyVisionExcluded, dvMessage)),
+                                dvMessage));
+
+                            continue;
                         }
                     }
 

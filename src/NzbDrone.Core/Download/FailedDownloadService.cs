@@ -12,6 +12,7 @@ namespace NzbDrone.Core.Download
     public interface IFailedDownloadService
     {
         void MarkAsFailed(int historyId, bool skipRedownload = false);
+        void MarkAsFailed(int historyId, string message, bool skipRedownload = false);
         void MarkAsFailed(TrackedDownload trackedDownload, bool skipRedownload = false);
         void Check(TrackedDownload trackedDownload);
         void ProcessFailed(TrackedDownload trackedDownload);
@@ -43,6 +44,16 @@ namespace NzbDrone.Core.Download
             }
 
             PublishDownloadFailedEvent(history, "Manually marked as failed");
+        }
+
+        // fork24: fail a movie from its grabbed history (no live tracked download) with an explicit,
+        // retraceable message. Used by the DV scan backstop to blocklist a leaked-in file's source release
+        // with the [DV-EXCLUDED] reason and trigger the configured re-search.
+        public void MarkAsFailed(int historyId, string message, bool skipRedownload = false)
+        {
+            var history = _historyService.Get(historyId);
+
+            PublishDownloadFailedEvent(history, message, skipRedownload: skipRedownload);
         }
 
         public void MarkAsFailed(TrackedDownload trackedDownload, bool skipRedownload = false)
@@ -94,7 +105,14 @@ namespace NzbDrone.Core.Download
 
             var failure = "Failed download detected";
 
-            if (trackedDownload.DownloadItem.IsEncrypted)
+            // fork24: an explicit policy-failure reason (e.g. excluded Dolby Vision profile, set via
+            // TrackedDownload.Fail(reason)) takes precedence, so its retraceable token reaches the
+            // blocklist Message instead of the generic text.
+            if (trackedDownload.FailureReason.IsNotNullOrWhiteSpace())
+            {
+                failure = trackedDownload.FailureReason;
+            }
+            else if (trackedDownload.DownloadItem.IsEncrypted)
             {
                 failure = "Encrypted download detected";
             }

@@ -41,6 +41,13 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         // that resists removal retries periodically instead of re-firing every refresh (search flood).
         public DateTime? LastFailedRecoveryAttempt { get; set; }
 
+        // fork24: an explicit, retraceable reason set when a download is failed for a policy violation
+        // detected at import (an excluded Dolby Vision profile) rather than a client-side failure.
+        // ProcessFailed prefers this over the generic "Failed download detected" so the reason - which
+        // carries a stable, greppable token - reaches the blocklist row's Message for later auditing /
+        // bulk un-blocklisting. Null for ordinary client failures, which keep the generic message.
+        public string FailureReason { get; private set; }
+
         public TrackedDownload()
         {
             StatusMessages = Array.Empty<TrackedDownloadStatusMessage>();
@@ -65,6 +72,14 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
             // Set CanBeRemoved to allow the failed item to be removed from the client
             DownloadItem.CanBeRemoved = true;
+        }
+
+        // fork24: fail with an explicit, retraceable reason (carried into the blocklist Message via
+        // ProcessFailed -> DownloadFailedEvent). Used for the DV-exclusion policy failure.
+        public void Fail(string reason)
+        {
+            FailureReason = reason;
+            Fail();
         }
     }
 

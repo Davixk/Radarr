@@ -81,6 +81,20 @@ namespace NzbDrone.Core.Test.Download.FailedDownloadServiceTests
             AssertDownloadFailed();
         }
 
+        [Test]
+        public void should_use_explicit_failure_reason_as_message_when_set()
+        {
+            var reason = "[DV-EXCLUDED] Dolby Vision profile 5 (compatibility id 0) is excluded by configuration; blocklisted for re-search";
+            _trackedDownload.Fail(reason);
+
+            Subject.ProcessFailed(_trackedDownload);
+
+            Mocker.GetMock<IEventAggregator>()
+                  .Verify(v => v.PublishEvent(It.Is<DownloadFailedEvent>(c => c.Message == reason)), Times.Once());
+
+            AssertDownloadFailed();
+        }
+
         private void AssertDownloadNotFailed()
         {
             Mocker.GetMock<IEventAggregator>()
