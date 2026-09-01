@@ -19,6 +19,7 @@ using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Lifecycle;
+using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Host;
@@ -75,6 +76,16 @@ namespace NzbDrone.App.Test
             var factory = _container.GetRequiredService<IServiceFactory>();
 
             factory.Build<IIndexerFactory>().Should().NotBeNull();
+        }
+
+        [Test]
+        public void should_resolve_scan_event_handlers()
+        {
+            // fork24 regression guard: DolbyVisionEnforcementService + UpdateMediaInfoService both handle
+            // MovieScannedEvent; resolving them together reproduces the startup path that must not form a
+            // DI cycle (UpdateMediaInfoService -> enforcement -> IDeleteMediaFiles -> ISeriesService -> ...
+            // -> IUpdateMediaInfo). Throws RecursiveDependencyDetected if the cycle regresses.
+            _container.GetServices<IHandle<MovieScannedEvent>>().Should().NotBeEmpty();
         }
 
         [Test]

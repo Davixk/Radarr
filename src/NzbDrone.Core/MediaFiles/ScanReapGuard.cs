@@ -100,7 +100,7 @@ namespace NzbDrone.Core.MediaFiles
 
             // Overlay-loaded proof: this line exists only in the patched core, so the wording is identical
             // across both forks and can be grepped to confirm the overlay loaded.
-            _logger.Info("fork24 config: dangling-symlink reaper {0} (storage health via target walk-up, ENOENT-gap aware), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms, probe kill-on-timeout on (all spawn sites), IMPORT_PROBE_THREADS={2} IMPORT_PROBE_TIMEOUT={3}s IMPORT_PROBE_TIMEOUT_STRIKES={4}; DV enforcement: import gate + reliable remote re-probe + scan backstop (blocklist on exclusion)",
+            _logger.Info("fork25 config: dangling-symlink reaper {0} (storage health via target walk-up, ENOENT-gap aware), cleanup empty-enum bail on, SQLITE_BUSY_TIMEOUT={1}ms, probe kill-on-timeout on (all spawn sites), IMPORT_PROBE_THREADS={2} IMPORT_PROBE_TIMEOUT={3}s IMPORT_PROBE_TIMEOUT_STRIKES={4}; DV enforcement: import gate + reliable remote re-probe + scan backstop (blocklist on exclusion)",
                 _reaperEnabled ? "ENABLED" : "disabled",
                 ConnectionStringFactory.GetBusyTimeout(),
                 ImportProbePool.GetDegreeOfParallelism(),

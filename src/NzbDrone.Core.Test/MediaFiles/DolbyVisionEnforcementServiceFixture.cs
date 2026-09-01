@@ -9,6 +9,7 @@ using NUnit.Framework;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles;
+using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.MediaFiles.MediaInfo;
 using NzbDrone.Core.MediaFiles.MovieImport.Specifications;
 using NzbDrone.Core.Movies;
@@ -96,6 +97,47 @@ namespace NzbDrone.Core.Test.MediaFiles
             Mocker.GetMock<IFailedDownloadService>().Verify(v => v.MarkAsFailed(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
 
             ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_enforce_on_every_file_on_scan_when_active()
+        {
+            GivenGrabHistory();
+
+            var files = new List<MovieFile>
+            {
+                Builder<MovieFile>.CreateNew().With(f => f.MediaInfo = GivenDovi(5, 0)).Build(),
+                Builder<MovieFile>.CreateNew().With(f => f.MediaInfo = GivenDovi(5, 0)).Build()
+            };
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFilesByMovie(_movie.Id))
+                .Returns(files);
+
+            Subject.Handle(new MovieScannedEvent(_movie, new List<string>()));
+
+            Mocker.GetMock<IDeleteMediaFiles>().Verify(v => v.DeleteMovieFile(_movie, It.IsAny<MovieFile>()), Times.Exactly(2));
+
+            ExceptionVerification.ExpectedWarns(2);
+        }
+
+        [Test]
+        public void should_not_enforce_on_scan_when_not_configured()
+        {
+            Environment.SetEnvironmentVariable("DV_REJECT_PROFILES", null);
+
+            var files = new List<MovieFile>
+            {
+                Builder<MovieFile>.CreateNew().With(f => f.MediaInfo = GivenDovi(5, 0)).Build()
+            };
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFilesByMovie(_movie.Id))
+                .Returns(files);
+
+            Subject.Handle(new MovieScannedEvent(_movie, new List<string>()));
+
+            Mocker.GetMock<IDeleteMediaFiles>().Verify(v => v.DeleteMovieFile(It.IsAny<Movie>(), It.IsAny<MovieFile>()), Times.Never());
         }
     }
 }

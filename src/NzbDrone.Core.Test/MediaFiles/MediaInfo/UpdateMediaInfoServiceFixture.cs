@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.IO;
 using FizzWare.NBuilder;
@@ -186,63 +185,6 @@ namespace NzbDrone.Core.Test.MediaFiles.MediaInfo
 
             Mocker.GetMock<IMediaFileService>()
                   .Verify(v => v.Update(It.IsAny<MovieFile>()), Times.Exactly(1));
-        }
-
-        [Test]
-        public void should_enforce_dolby_vision_exclusion_on_every_file_when_active()
-        {
-            // fork24 backstop: files at the CURRENT media-info schema are skipped by the update loop, but the
-            // DV backstop must still run on all of them (this is how an already-leaked file gets caught).
-            Environment.SetEnvironmentVariable("DV_REJECT_PROFILES", "5");
-
-            try
-            {
-                var movieFiles = Builder<MovieFile>.CreateListOfSize(2)
-                    .All()
-                    .With(v => v.Path = null)
-                    .With(v => v.RelativePath = "media.mkv")
-                    .With(v => v.MediaInfo = new MediaInfoModel { SchemaRevision = VideoFileInfoReader.CURRENT_MEDIA_INFO_SCHEMA_REVISION })
-                    .BuildList();
-
-                Mocker.GetMock<IMediaFileService>()
-                      .Setup(v => v.GetFilesByMovie(1))
-                      .Returns(movieFiles);
-
-                GivenFileExists();
-                GivenSuccessfulScan();
-
-                Subject.Handle(new MovieScannedEvent(_movie, new List<string>()));
-
-                Mocker.GetMock<IDolbyVisionEnforcementService>()
-                      .Verify(v => v.EnforceOnLibraryFile(_movie, It.IsAny<MovieFile>()), Times.Exactly(2));
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable("DV_REJECT_PROFILES", null);
-            }
-        }
-
-        [Test]
-        public void should_not_enforce_dolby_vision_when_not_configured()
-        {
-            var movieFiles = Builder<MovieFile>.CreateListOfSize(2)
-                .All()
-                .With(v => v.Path = null)
-                .With(v => v.RelativePath = "media.mkv")
-                .With(v => v.MediaInfo = new MediaInfoModel { SchemaRevision = VideoFileInfoReader.CURRENT_MEDIA_INFO_SCHEMA_REVISION })
-                .BuildList();
-
-            Mocker.GetMock<IMediaFileService>()
-                  .Setup(v => v.GetFilesByMovie(1))
-                  .Returns(movieFiles);
-
-            GivenFileExists();
-            GivenSuccessfulScan();
-
-            Subject.Handle(new MovieScannedEvent(_movie, new List<string>()));
-
-            Mocker.GetMock<IDolbyVisionEnforcementService>()
-                  .Verify(v => v.EnforceOnLibraryFile(It.IsAny<Movie>(), It.IsAny<MovieFile>()), Times.Never());
         }
 
         [Test]
