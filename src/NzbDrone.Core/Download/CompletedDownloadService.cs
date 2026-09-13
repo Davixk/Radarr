@@ -309,21 +309,25 @@ namespace NzbDrone.Core.Download
             trackedDownload.State = TrackedDownloadState.ImportPending;
 
             // fork20: this pass reached the import commit and did not import. Count consecutive import-commit
-            // failures and, at MaxImportFailures, stop the eternal ImportPending<->ImportBlocked retry (the
-            // undead shapes: PathTooLong during the move, source folder gone, nothing eligible) - mark it
-            // terminal and leave it visibly ImportBlocked for manual action. Small-but-not-1 threshold so a
-            // transient failure that resolves within a few passes is never terminalized.
+            // failures and, at MaxImportFailures, stop the arr's own eternal ImportPending<->ImportBlocked
+            // re-commit loop (the undead shapes: PathTooLong during the move, source folder gone, nothing
+            // eligible) by marking the download terminal (Check skips its revival above). Small-but-not-1
+            // threshold so a transient failure that resolves within a few passes is never terminalized.
+            //
+            // fork26: set ONLY the terminal flag here and fall through to the normal handling below. fork20 also
+            // Warn()ed a generic "N consecutive attempts" string and returned early, which OVERWROTE the real
+            // import failure reason (e.g. "timeout waiting for mount files") and erased the diagnosis - that
+            // disarmed the operator's reason-matching queue resolver, which can no longer tell a transient
+            // failure (retry) from a dead release (blocklist). The attempt count is metadata about our retrying,
+            // not a diagnosis, so it must never substitute for the reason. The handling below reports the REAL
+            // error verbatim and blocks for manual action; the terminal flag still stops the eternal loop.
             const int maxImportFailures = 3;
 
             trackedDownload.ConsecutiveImportFailures++;
 
             if (trackedDownload.ConsecutiveImportFailures >= maxImportFailures)
             {
-                trackedDownload.Warn("Import failed on {0} consecutive attempts; manual action required", trackedDownload.ConsecutiveImportFailures);
                 trackedDownload.ImportFailedPermanently = true;
-                SetStateToImportBlocked(trackedDownload);
-
-                return;
             }
 
             if (importResults.Empty())

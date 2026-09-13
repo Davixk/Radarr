@@ -203,6 +203,14 @@ namespace NzbDrone.Core.Test.Download
             Subject.Import(_trackedDownload);
             _trackedDownload.ImportFailedPermanently.Should().BeTrue();
             _trackedDownload.State.Should().Be(TrackedDownloadState.ImportBlocked);
+
+            // fork26: the terminal cap must NOT swallow the real reason. The status must still carry the actual
+            // import failure verbatim (so the operator's reason-matching resolver fires) and must NOT be
+            // replaced by a generic attempt-counter string. This assertion is RED on fork20 (which overwrote
+            // the reason with "Import failed on N consecutive attempts").
+            var messages = _trackedDownload.StatusMessages.SelectMany(m => m.Messages).ToList();
+            messages.Should().Contain(m => m.Contains("Test Failure"));
+            messages.Should().NotContain(m => m.Contains("consecutive attempts"));
         }
 
         [Test]
