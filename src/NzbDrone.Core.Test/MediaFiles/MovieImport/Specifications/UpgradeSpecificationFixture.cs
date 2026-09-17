@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using FizzWare.NBuilder;
 using FluentAssertions;
@@ -236,6 +237,56 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport.Specifications
             _localMovie.Movie.MovieFile = movieFile;
 
             Subject.IsSatisfiedBy(_localMovie, null).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_reject_identical_release_re_presented_with_a_different_probe()
+        {
+            // fork27: the SAME release re-grabbed = same quality + same size (byte-identical) + same custom-format
+            // score. Only the non-deterministic MediaInfo probe differs, which is not a quality change. Must be a
+            // NO-OP, else the delete+re-import renames the file and kills Plex's stored path. RED on stock (a tie
+            // is accepted and the file is replaced), GREEN with the same-release guard.
+            var movieFile = new MovieFile
+            {
+                Quality = new QualityModel(Quality.Bluray2160p),
+                Size = 8_000_000_000L
+            };
+
+            Mocker.GetMock<ICustomFormatCalculationService>()
+                .Setup(s => s.ParseCustomFormat(movieFile))
+                .Returns(new List<CustomFormat>());
+
+            _localMovie.Quality = new QualityModel(Quality.Bluray2160p);
+            _localMovie.Size = 8_000_000_000L;
+            _localMovie.CustomFormatScore = 0;
+            _localMovie.Movie.MovieFileId = 1;
+            _localMovie.Movie.MovieFile = movieFile;
+
+            Subject.IsSatisfiedBy(_localMovie, null).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_accept_a_same_score_release_of_a_different_size()
+        {
+            // fork27 guard is surgical: it must NOT block a genuinely different same-score release (different
+            // bytes = different size). Stock same-score-different-file behaviour is preserved.
+            var movieFile = new MovieFile
+            {
+                Quality = new QualityModel(Quality.Bluray2160p),
+                Size = 8_000_000_000L
+            };
+
+            Mocker.GetMock<ICustomFormatCalculationService>()
+                .Setup(s => s.ParseCustomFormat(movieFile))
+                .Returns(new List<CustomFormat>());
+
+            _localMovie.Quality = new QualityModel(Quality.Bluray2160p);
+            _localMovie.Size = 7_500_000_000L;
+            _localMovie.CustomFormatScore = 0;
+            _localMovie.Movie.MovieFileId = 1;
+            _localMovie.Movie.MovieFile = movieFile;
+
+            Subject.IsSatisfiedBy(_localMovie, null).Accepted.Should().BeTrue();
         }
     }
 }

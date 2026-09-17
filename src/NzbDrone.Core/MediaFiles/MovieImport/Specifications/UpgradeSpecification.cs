@@ -64,6 +64,34 @@ namespace NzbDrone.Core.MediaFiles.MovieImport.Specifications
                 var newCustomFormats = localMovie.CustomFormats;
                 var newFormatScore = localMovie.CustomFormatScore;
 
+                // fork27: an IDENTICAL release re-presented must be a NO-OP, never a delete+re-import. The
+                // MediaInfo probe of a remote/debrid file is non-deterministic ({MediaInfo VideoDynamicRangeType}
+                // flaps), so a fresh grab of the SAME release re-imports, re-probes, and renames the file - which
+                // kills Plex's stored path. When the incoming file is byte-identical to the existing one (same
+                // quality, same size, and the same custom-format score - and no custom format reads MediaInfo, so
+                // a flapped probe verdict cannot change the score), the ONLY thing that changed is the probe, which
+                // is not a quality change. Reject it so the existing file and its name are untouched. Genuinely
+                // different releases (different size, or a real CF/quality/revision improvement) are unaffected;
+                // stock same-score-different-file behaviour (e.g. a language "upgrade") is preserved.
+                // fork27: an IDENTICAL release re-presented must be a NO-OP, never a delete+re-import. The
+                // MediaInfo probe of a remote/debrid file is non-deterministic ({MediaInfo VideoDynamicRangeType}
+                // flaps), so a fresh grab of the SAME release re-imports, re-probes, and renames the file - which
+                // kills Plex's stored path. When the incoming file is byte-identical to the existing one (same
+                // quality, same size, and the same custom-format score - and no custom format reads MediaInfo, so
+                // a flapped probe verdict cannot change the score), the ONLY thing that changed is the probe, which
+                // is not a quality change. Reject it so the existing file and its name are untouched. Genuinely
+                // different releases (different size, or a real CF/quality/revision improvement) are unaffected;
+                // stock same-score-different-file behaviour (e.g. a language "upgrade") is preserved.
+                if (qualityCompare == 0 &&
+                    newFormatScore == currentFormatScore &&
+                    localMovie.Size > 0 &&
+                    localMovie.Size == movieFile.Size)
+                {
+                    _logger.Debug("Identical release re-presented (same size {0}, same custom-format score {1}); probe noise is not an upgrade, skipping {2}", localMovie.Size, newFormatScore, localMovie.Path);
+
+                    return ImportSpecDecision.Reject(ImportRejectionReason.NotCustomFormatUpgrade, "Identical release already imported (same size and custom formats); not replacing on probe noise");
+                }
+
                 if (qualityCompare == 0 && newFormatScore < currentFormatScore)
                 {
                     _logger.Debug("New item's custom formats [{0}] ({1}) do not improve on [{2}] ({3}), skipping",
