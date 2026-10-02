@@ -243,6 +243,11 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
             {
                 return TimeSpan.FromMinutes(120);
             }
+
+            public string TakeUnparseableReason(string filename)
+            {
+                return null;
+            }
         }
 
         // Forces the probes to complete in reverse input order so that a naive implementation that
@@ -303,6 +308,11 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
             {
                 return TimeSpan.FromMinutes(120);
             }
+
+            public string TakeUnparseableReason(string filename)
+            {
+                return null;
+            }
         }
 
         // Blocks one specific file's probe until the latch is released, representing an ffprobe stuck in
@@ -333,6 +343,11 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
             public TimeSpan? GetRunTime(string filename)
             {
                 return TimeSpan.FromMinutes(120);
+            }
+
+            public string TakeUnparseableReason(string filename)
+            {
+                return null;
             }
         }
     }

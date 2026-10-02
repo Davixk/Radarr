@@ -27,5 +27,6 @@ public enum ImportRejectionReason
     NotRevisionUpgrade,
     NotCustomFormatUpgrade,
     AudioLanguageMismatch,
-    DolbyVisionExcluded
+    DolbyVisionExcluded,
+    UnparseableMedia
 }

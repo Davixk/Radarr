@@ -17,6 +17,14 @@ namespace NzbDrone.Core.MediaFiles
         // a chatty child cannot deadlock by filling the stderr pipe while we wait on stdout.
         public static string Run(ProcessStartInfo startInfo, TimeSpan timeout, Action<Process> onStarted = null, Action<Process> onFinished = null)
         {
+            return RunWithResult(startInfo, timeout, onStarted, onFinished).StandardOutput;
+        }
+
+        // fork28: same as Run, but also reports how the process ended (exit code, stderr, and whether WE killed
+        // it at the deadline) so a caller can tell a child that ran to completion and failed from one that was
+        // cut off.
+        public static TimeBoundedProcessResult RunWithResult(ProcessStartInfo startInfo, TimeSpan timeout, Action<Process> onStarted = null, Action<Process> onFinished = null)
+        {
             using var process = new Process { StartInfo = startInfo };
 
             process.Start();
@@ -26,6 +34,7 @@ namespace NzbDrone.Core.MediaFiles
             {
                 var stdoutTask = process.StandardOutput.ReadToEndAsync();
                 var stderrTask = process.StandardError.ReadToEndAsync();
+                var timedOut = false;
 
                 if (timeout > TimeSpan.Zero)
                 {
@@ -33,6 +42,7 @@ namespace NzbDrone.Core.MediaFiles
 
                     if (!process.WaitForExit(timeoutMs))
                     {
+                        timedOut = true;
                         TryKill(process);
                     }
                 }
@@ -41,9 +51,9 @@ namespace NzbDrone.Core.MediaFiles
                 process.WaitForExit();
 
                 var output = stdoutTask.GetAwaiter().GetResult();
-                stderrTask.GetAwaiter().GetResult();
+                var error = stderrTask.GetAwaiter().GetResult();
 
-                return output;
+                return new TimeBoundedProcessResult(output, error, process.ExitCode, timedOut);
             }
             finally
             {
@@ -65,5 +75,21 @@ namespace NzbDrone.Core.MediaFiles
                 // Racing a normal exit, or already gone: nothing to kill.
             }
         }
+    }
+
+    public class TimeBoundedProcessResult
+    {
+        public TimeBoundedProcessResult(string standardOutput, string standardError, int exitCode, bool timedOut)
+        {
+            StandardOutput = standardOutput;
+            StandardError = standardError;
+            ExitCode = exitCode;
+            TimedOut = timedOut;
+        }
+
+        public string StandardOutput { get; }
+        public string StandardError { get; }
+        public int ExitCode { get; }
+        public bool TimedOut { get; }
     }
 }

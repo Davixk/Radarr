@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using FFMpegCore;
 using NLog;
 using NzbDrone.Common.Disk;
@@ -16,13 +18,20 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
     {
         MediaInfoModel GetMediaInfo(string filename);
         TimeSpan? GetRunTime(string filename);
+        string TakeUnparseableReason(string filename);
     }
 
     public class VideoFileInfoReader : IVideoFileInfoReader
     {
+        // fork28: the line ffprobe prints for AVERROR_INVALIDDATA, i.e. it read the bytes and they are not media.
+        private const string InvalidDataMessage = "Invalid data found when processing input";
+
+        private static readonly Regex DemuxerAddressRegex = new Regex(@" @ 0x[0-9a-f]+\]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private readonly IDiskProvider _diskProvider;
         private readonly Logger _logger;
         private readonly List<FFProbePixelFormat> _pixelFormats;
+        private readonly ConcurrentDictionary<string, string> _unparseableReasons = new ();
 
         public const int MINIMUM_MEDIA_INFO_SCHEMA_REVISION = 14;
         public const int CURRENT_MEDIA_INFO_SCHEMA_REVISION = 14;
@@ -77,17 +86,34 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
             }
 
             // TODO: Cache media info by path, mtime and length so we don't need to read files multiple times
+            _unparseableReasons.TryRemove(filename, out _);
+
             try
             {
                 _logger.Debug("Getting media info from {0}", filename);
-                var ffprobeOutput = RunFfprobe(StreamProbeArgs, "-probesize 50000000", filename);
+                var probe = RunFfprobe(StreamProbeArgs, "-probesize 50000000", filename);
+
+                // fork28: a probe that ran to completion and reported the content itself as invalid is a
+                // definitive "this is not media" answer, not a transient fault. Record it so the import path can
+                // reject the file with a retraceable reason instead of reading the null as "unknown".
+                var unparseableReason = GetUnparseableReason(probe);
+
+                if (unparseableReason != null)
+                {
+                    _unparseableReasons[filename] = unparseableReason;
+                    _logger.Warn("Not a valid media file, ffprobe could not parse it: {0} ({1})", filename, unparseableReason);
+
+                    return null;
+                }
+
+                var ffprobeOutput = probe.StandardOutput;
 
                 var analysis = FFProbe.AnalyseStreamJson(ffprobeOutput);
                 var primaryVideoStream = GetPrimaryVideoStream(analysis);
 
                 if (analysis.PrimaryAudioStream?.ChannelLayout.IsNullOrWhiteSpace() ?? true)
                 {
-                    ffprobeOutput = RunFfprobe(StreamProbeArgs, "-probesize 150000000 -analyzeduration 150000000", filename);
+                    ffprobeOutput = RunFfprobe(StreamProbeArgs, "-probesize 150000000 -analyzeduration 150000000", filename).StandardOutput;
                     analysis = FFProbe.AnalyseStreamJson(ffprobeOutput);
                 }
 
@@ -134,7 +160,7 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
                 if (PqTransferFunctions.Contains(mediaInfoModel.VideoTransferCharacteristics))
                 {
                     var videoStreamIndex = analysis.VideoStreams.FindIndex(stream => stream.Index == primaryVideoStream?.Index);
-                    var frameOutput = RunFfprobe(FrameProbeArgs, $"-read_intervals \"%+#1\" -select_streams v:{(videoStreamIndex == -1 ? 0 : videoStreamIndex)}", filename);
+                    var frameOutput = RunFfprobe(FrameProbeArgs, $"-read_intervals \"%+#1\" -select_streams v:{(videoStreamIndex == -1 ? 0 : videoStreamIndex)}", filename).StandardOutput;
                     mediaInfoModel.RawFrameData = frameOutput;
 
                     frames = FFProbe.AnalyseFrameJson(frameOutput);
@@ -163,6 +189,39 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
             return info?.RunTime;
         }
 
+        // fork28: returns (and clears) the reason the most recent probe of this file found it unparseable, or null
+        // if that probe did not classify it so. Callers read it right after their own GetMediaInfo call.
+        public string TakeUnparseableReason(string filename)
+        {
+            return _unparseableReasons.TryRemove(filename, out var reason) ? reason : null;
+        }
+
+        // fork28: a probe is UNPARSEABLE only when ffprobe ran to completion (we did not kill it at the deadline),
+        // failed, and named the content itself as invalid. Measured against the bundled ffprobe: random bytes,
+        // zero-filled and empty files all exit 1 with "Invalid data found when processing input". A file that is
+        // missing or unreachable fails differently ("No such file or directory", "Input/output error", or a
+        // timeout kill), so a transport fault is never classified as unparseable and never rejected for it.
+        public static string GetUnparseableReason(TimeBoundedProcessResult probe)
+        {
+            if (probe == null || probe.TimedOut || probe.ExitCode == 0 || probe.StandardError.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            if (!probe.StandardError.Contains(InvalidDataMessage, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var lines = probe.StandardError
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(line => line.Contains(InvalidDataMessage, StringComparison.OrdinalIgnoreCase) ? InvalidDataMessage : DemuxerAddressRegex.Replace(line, "]"))
+                .Distinct()
+                .ToList();
+
+            return string.Join("; ", lines);
+        }
+
         // fork7/fork8: spawn ffprobe as a Process WE own, with a hard deadline, so no probe can wedge in
         // D-state. The args are byte-identical to what Servarr.FFMpegCore's GetStreamJson / GetFrameJson emit,
         // so the returned stdout parses unchanged through FFProbe.AnalyseStreamJson / AnalyseFrameJson. fork8:
@@ -173,7 +232,7 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
         // (CurrentSlot is null). On a kill the stdout pipe closes, the partial buffer is returned,
         // AnalyseStreamJson throws on the truncated JSON and GetMediaInfo returns null; a pooled item was also
         // flagged timed-out, so the null is not a real read.
-        private string RunFfprobe(string baseArgs, string extraArgs, string filename)
+        private TimeBoundedProcessResult RunFfprobe(string baseArgs, string extraArgs, string filename)
         {
             var binary = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
                 OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe");
@@ -190,7 +249,7 @@ namespace NzbDrone.Core.MediaFiles.MediaInfo
                 StandardErrorEncoding = Encoding.UTF8
             };
 
-            return TimeBoundedProcess.Run(
+            return TimeBoundedProcess.RunWithResult(
                 startInfo,
                 ImportProbePool.GetTimeout(),
                 ProbeProcessRegistry.Attach,

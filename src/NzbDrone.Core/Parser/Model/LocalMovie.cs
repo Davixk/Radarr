@@ -29,6 +29,10 @@ namespace NzbDrone.Core.Parser.Model
         public List<Language> Languages { get; set; }
         public IndexerFlags IndexerFlags { get; set; }
         public MediaInfoModel MediaInfo { get; set; }
+
+        // fork28: set when the media-info probe ran to completion and ffprobe named the content itself as not
+        // media (see VideoFileInfoReader.GetUnparseableReason). Null for a successful or merely failed probe.
+        public string UnparseableReason { get; set; }
         public bool ExistingFile { get; set; }
         public bool SceneSource { get; set; }
         public string ReleaseGroup { get; set; }

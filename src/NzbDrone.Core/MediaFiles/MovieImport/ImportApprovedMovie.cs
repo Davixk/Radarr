@@ -85,6 +85,23 @@ namespace NzbDrone.Core.MediaFiles.MovieImport
 
                 try
                 {
+                    // fork28: the one choke point every import path goes through. ManualImport builds its decision
+                    // with NO rejections (stock: the caller is the authority), so a file the probe proved is not
+                    // media was imported whenever a resolver force-imported it past the automatic rejection. Refuse
+                    // it here too, with the same retraceable reason ParseableMediaSpecification gives.
+                    var unparseableMessage = ParseableMediaSpecification.GetRejectionMessage(localMovie);
+
+                    if (unparseableMessage != null)
+                    {
+                        _logger.Warn("Refusing to import {0}: {1}", localMovie.Path, unparseableMessage);
+
+                        importResults.Add(new ImportResult(
+                            new ImportDecision(localMovie, new ImportRejection(ImportRejectionReason.UnparseableMedia, unparseableMessage)),
+                            unparseableMessage));
+
+                        continue;
+                    }
+
                     // check if already imported
                     if (importResults.Select(r => r.ImportDecision.LocalMovie.Movie)
                                          .Select(m => m.Id).Contains(localMovie.Movie.Id))

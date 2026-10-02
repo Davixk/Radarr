@@ -16,6 +16,7 @@ using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.MediaFiles.MediaInfo;
 using NzbDrone.Core.MediaFiles.MovieImport;
+using NzbDrone.Core.MediaFiles.MovieImport.Specifications;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Movies;
 using NzbDrone.Core.Parser.Model;
@@ -421,6 +422,53 @@ namespace NzbDrone.Core.Test.MediaFiles.MovieImport
                 r.ImportDecision.Rejections.Any(x => x.Reason == ImportRejectionReason.DolbyVisionExcluded));
 
             ExceptionVerification.ExpectedWarns(1);
+        }
+
+        // fork28: the ManualImport shape - a decision built with NO rejections (the caller is the authority) for a
+        // file the probe proved is not media. Stock imports it (how files with garbage headers got in past the
+        // automatic SampleIndeterminate rejection). It must be refused here, the one choke point every import path
+        // goes through, with the greppable [UNPARSEABLE] reason.
+        [Test]
+        public void should_refuse_a_rejection_free_decision_for_a_file_proven_not_media()
+        {
+            GivenNewDownload();
+
+            var decision = _approvedDecisions.First();
+            decision.LocalMovie.MediaInfo = null;
+            decision.LocalMovie.UnparseableReason = "[matroska,webm] EBML header parsing failed; Invalid data found when processing input";
+
+            var result = Subject.Import(new List<ImportDecision> { decision }, true, _downloadClientItem);
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                  .Verify(v => v.UpgradeMovieFile(It.IsAny<MovieFile>(), It.IsAny<LocalMovie>(), It.IsAny<bool>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Verify(v => v.Add(It.IsAny<MovieFile>()), Times.Never());
+
+            Mocker.GetMock<IEventAggregator>()
+                  .Verify(v => v.PublishEvent(It.IsAny<MovieFileImportedEvent>()), Times.Never());
+
+            result.Should().ContainSingle(r => r.Result == ImportResultType.Rejected &&
+                r.ImportDecision.Rejections.Any(x => x.Reason == ImportRejectionReason.UnparseableMedia &&
+                                                     x.Message.StartsWith(ParseableMediaSpecification.RejectionToken)));
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        // A null MediaInfo that was NOT classified unparseable (mount fault, disk image, media info off) still
+        // imports exactly as stock.
+        [Test]
+        public void should_still_import_a_null_media_info_file_that_was_not_proven_unparseable()
+        {
+            GivenNewDownload();
+
+            var decision = _approvedDecisions.First();
+            decision.LocalMovie.MediaInfo = null;
+            decision.LocalMovie.UnparseableReason = null;
+
+            var result = Subject.Import(new List<ImportDecision> { decision }, true, _downloadClientItem);
+
+            result.Should().ContainSingle(r => r.Result == ImportResultType.Imported);
         }
 
         [Test]
